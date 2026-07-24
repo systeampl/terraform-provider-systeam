@@ -1,0 +1,22 @@
+---
+page_title: "Syschecks (SysTeam) Provider"
+description: |-
+  Manage your entire Syschecks monitoring stack as code — checks, on-call,
+  status pages, escalation policies, services and multi-stage incident playbooks.
+---
+
+# Syschecks Provider
+
+The Syschecks (SysTeam Healthchecks) provider lets you manage your monitoring,
+on-call and incident-response configuration as code: checks (uptime, HTTP, DNS,
+database, API scenarios and more), projects, status pages, notification channels,
+escalation policies, on-call schedules, SLOs, teams, services, integration keys,
+contact methods, lifecycle watches and multi-stage playbooks.
+
+Works with both **Terraform** and **OpenTofu**.
+
+## Example Usage
+
+{{ tffile "examples/provider/provider.tf" }}
+
+{{ .SchemaMarkdown | trimspace }}
