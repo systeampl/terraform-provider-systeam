@@ -1,0 +1,9 @@
+terraform-provider-systeam
+dist/
+.terraform/
+*.tfstate*
+
+# local terraform init artifacts in examples
+examples/**/.terraform/
+examples/**/.terraform.lock.hcl
+examples/**/.terraformrc-local
