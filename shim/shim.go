@@ -2,7 +2,7 @@ package shim
 
 import (
 	"github.com/hashicorp/terraform-plugin-framework/provider"
-	internal "github.com/pawel-cygal/terraform-provider-systeam/internal/provider"
+	internal "github.com/systeampl/terraform-provider-systeam/internal/provider"
 )
 
 // New returns a new instance of the SysTeam provider.

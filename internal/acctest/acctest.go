@@ -22,7 +22,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
-	"github.com/pawel-cygal/terraform-provider-systeam/internal/provider"
+	"github.com/systeampl/terraform-provider-systeam/internal/provider"
 )
 
 // ProtoV6ProviderFactories wires the in-process provider into the test framework

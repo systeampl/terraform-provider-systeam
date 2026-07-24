@@ -1,4 +1,4 @@
-module github.com/pawel-cygal/terraform-provider-systeam
+module github.com/systeampl/terraform-provider-systeam
 
 go 1.25.8
 

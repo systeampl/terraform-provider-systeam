@@ -1,13 +1,13 @@
 terraform {
   required_providers {
     systeam = {
-      source = "registry.terraform.io/pawel-cygal/systeam"
+      source = "registry.terraform.io/systeampl/systeam"
     }
   }
 }
 
 provider "systeam" {
-  api_url   = "https://systeam.pl/api"
+  api_url   = "https://syschecks.com"
   api_token = var.systeam_token
 }
 

@@ -3,7 +3,7 @@
 
 terraform {
   required_providers {
-    systeam = { source = "registry.terraform.io/pawel-cygal/systeam" }
+    systeam = { source = "registry.terraform.io/systeampl/systeam" }
   }
 }
 

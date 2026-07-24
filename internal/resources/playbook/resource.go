@@ -19,7 +19,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/pawel-cygal/terraform-provider-systeam/internal/client"
+	"github.com/systeampl/terraform-provider-systeam/internal/client"
 )
 
 // The playbook action/trigger vocabularies mirror the backend

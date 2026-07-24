@@ -9,8 +9,8 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
-	"github.com/pawel-cygal/terraform-provider-systeam/internal/acctest"
-	"github.com/pawel-cygal/terraform-provider-systeam/internal/client"
+	"github.com/systeampl/terraform-provider-systeam/internal/acctest"
+	"github.com/systeampl/terraform-provider-systeam/internal/client"
 )
 
 // TestAccIntegrationKey proves the resource round-trips through the LIVE API:
