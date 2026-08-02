@@ -19,7 +19,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/systeampl/terraform-provider-systeam/internal/client"
+	syschecks "github.com/systeampl/syschecks-go"
+	"github.com/systeampl/syschecks-go/models"
+	"github.com/systeampl/terraform-provider-systeam/internal/sdkutil"
 )
 
 // The playbook action/trigger vocabularies mirror the backend
@@ -43,7 +45,7 @@ var (
 )
 
 type playbookResource struct {
-	client *client.Client
+	sdk *syschecks.Client
 }
 
 func NewResource() resource.Resource {
@@ -160,40 +162,15 @@ func (r *playbookResource) Configure(_ context.Context, req resource.ConfigureRe
 	if req.ProviderData == nil {
 		return
 	}
-	c, ok := req.ProviderData.(*client.Client)
+	sdk, ok := req.ProviderData.(*syschecks.Client)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Resource Configure Type",
-			fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData),
+			fmt.Sprintf("Expected *syschecks.Client, got: %T", req.ProviderData),
 		)
 		return
 	}
-	r.client = c
-}
-
-func (r *playbookResource) buildRequest(plan *PlaybookModel) client.PlaybookWriteRequest {
-	steps := make([]client.PlaybookStep, len(plan.Steps))
-	for i, s := range plan.Steps {
-		steps[i] = client.PlaybookStep{
-			StepOrder:      int(s.StepOrder.ValueInt64()),
-			Name:           s.Name.ValueString(),
-			ActionType:     s.ActionType.ValueString(),
-			Config:         rawFromNormalized(s.Config),
-			Conditions:     rawFromNormalized(s.Conditions),
-			ParallelGroup:  optionalString(s.ParallelGroup),
-			IsManual:       s.IsManual.ValueBool(),
-			TimeoutSeconds: int(s.TimeoutSeconds.ValueInt64()),
-		}
-	}
-	return client.PlaybookWriteRequest{
-		Name:                         plan.Name.ValueString(),
-		Description:                  plan.Description.ValueString(),
-		TriggerType:                  plan.TriggerType.ValueString(),
-		TriggerConditions:            rawFromNormalized(plan.TriggerConditions),
-		ServiceID:                    optionalInt(plan.ServiceID),
-		SuppressDefaultNotifications: plan.SuppressDefaultNotifications.ValueBool(),
-		Steps:                        steps,
-	}
+	r.sdk = sdk
 }
 
 func (r *playbookResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -203,13 +180,25 @@ func (r *playbookResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
-	pb, err := r.client.CreatePlaybook(ctx, int(plan.OrganizationID.ValueInt64()), r.buildRequest(&plan))
+	suppress := plan.SuppressDefaultNotifications.ValueBool()
+	pb, err := r.sdk.Playbooks.CreatePlaybook(ctx, int(plan.OrganizationID.ValueInt64()), models.CreatePlaybookJSONRequestBody{
+		Name:                         plan.Name.ValueString(),
+		Description:                  sdkutil.StrPtr(plan.Description),
+		TriggerType:                  plan.TriggerType.ValueString(),
+		TriggerConditions:            objectFromNormalized(plan.TriggerConditions),
+		ServiceId:                    sdkutil.IntPtr(plan.ServiceID),
+		SuppressDefaultNotifications: &suppress,
+		Steps:                        stepsToSDK(plan.Steps),
+	})
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating playbook", err.Error())
 		return
 	}
 
 	resp.Diagnostics.Append(mapPlaybookToState(pb, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -220,9 +209,9 @@ func (r *playbookResource) Read(ctx context.Context, req resource.ReadRequest, r
 		return
 	}
 
-	pb, err := r.client.GetPlaybook(ctx, int(state.OrganizationID.ValueInt64()), int(state.ID.ValueInt64()))
+	pb, err := r.sdk.Playbooks.GetPlaybook(ctx, int(state.OrganizationID.ValueInt64()), int(state.ID.ValueInt64()))
 	if err != nil {
-		if apiErr, ok := err.(*client.APIError); ok && apiErr.IsNotFound() {
+		if sdkutil.IsNotFound(err) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -231,6 +220,9 @@ func (r *playbookResource) Read(ctx context.Context, req resource.ReadRequest, r
 	}
 
 	resp.Diagnostics.Append(mapPlaybookToState(pb, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -241,13 +233,27 @@ func (r *playbookResource) Update(ctx context.Context, req resource.UpdateReques
 		return
 	}
 
-	pb, err := r.client.UpdatePlaybook(ctx, int(plan.OrganizationID.ValueInt64()), int(plan.ID.ValueInt64()), r.buildRequest(&plan))
+	name := plan.Name.ValueString()
+	triggerType := plan.TriggerType.ValueString()
+	suppress := plan.SuppressDefaultNotifications.ValueBool()
+	pb, err := r.sdk.Playbooks.UpdatePlaybook(ctx, int(plan.OrganizationID.ValueInt64()), int(plan.ID.ValueInt64()), models.UpdatePlaybookJSONRequestBody{
+		Name:                         &name,
+		Description:                  sdkutil.StrPtr(plan.Description),
+		TriggerType:                  &triggerType,
+		TriggerConditions:            objectFromNormalized(plan.TriggerConditions),
+		ServiceId:                    sdkutil.IntPtr(plan.ServiceID),
+		SuppressDefaultNotifications: &suppress,
+		Steps:                        stepsToSDK(plan.Steps),
+	})
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating playbook", err.Error())
 		return
 	}
 
 	resp.Diagnostics.Append(mapPlaybookToState(pb, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -257,9 +263,8 @@ func (r *playbookResource) Delete(ctx context.Context, req resource.DeleteReques
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	err := r.client.DeletePlaybook(ctx, int(state.OrganizationID.ValueInt64()), int(state.ID.ValueInt64()))
-	if err != nil {
-		if apiErr, ok := err.(*client.APIError); ok && apiErr.IsNotFound() {
+	if _, err := r.sdk.Playbooks.DeletePlaybook(ctx, int(state.OrganizationID.ValueInt64()), int(state.ID.ValueInt64())); err != nil {
+		if sdkutil.IsNotFound(err) {
 			return
 		}
 		resp.Diagnostics.AddError("Error deleting playbook", err.Error())
@@ -286,39 +291,125 @@ func (r *playbookResource) ImportState(ctx context.Context, req resource.ImportS
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), playbookID)...)
 }
 
-func mapPlaybookToState(pb *client.Playbook, m *PlaybookModel) diag.Diagnostics {
-	m.ID = types.Int64Value(int64(pb.ID))
-	m.OrganizationID = types.Int64Value(int64(pb.OrganizationID))
+// stepResponse mirrors a single element of PlaybookResponse.Steps, which the SDK
+// types as an opaque interface{}. config/conditions stay opaque JSON blobs so the
+// provider round-trips them through jsontypes.Normalized exactly as before.
+type stepResponse struct {
+	StepOrder      int             `json:"step_order"`
+	Name           string          `json:"name"`
+	ActionType     string          `json:"action_type"`
+	Config         json.RawMessage `json:"config"`
+	Conditions     json.RawMessage `json:"conditions"`
+	ParallelGroup  *string         `json:"parallel_group"`
+	IsManual       bool            `json:"is_manual"`
+	TimeoutSeconds int             `json:"timeout_seconds"`
+}
+
+// stepsToSDK converts the plan's nested step blocks into the SDK step schema. The
+// config/conditions JSON blobs are decoded into the SDK's typed shapes.
+func stepsToSDK(steps []PlaybookStepModel) *[]models.PlaybookStepSchema {
+	out := make([]models.PlaybookStepSchema, len(steps))
+	for i, s := range steps {
+		isManual := s.IsManual.ValueBool()
+		timeout := int(s.TimeoutSeconds.ValueInt64())
+		out[i] = models.PlaybookStepSchema{
+			StepOrder:      int(s.StepOrder.ValueInt64()),
+			Name:           s.Name.ValueString(),
+			ActionType:     s.ActionType.ValueString(),
+			Config:         objectFromNormalized(s.Config),
+			Conditions:     conditionsFromNormalized(s.Conditions),
+			ParallelGroup:  sdkutil.StrPtr(s.ParallelGroup),
+			IsManual:       &isManual,
+			TimeoutSeconds: &timeout,
+		}
+	}
+	return &out
+}
+
+func mapPlaybookToState(pb *models.PlaybookResponse, m *PlaybookModel) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	m.ID = types.Int64Value(int64(pb.Id))
+	m.OrganizationID = types.Int64Value(int64(pb.OrganizationId))
 	m.Name = types.StringValue(pb.Name)
-	m.Description = types.StringValue(pb.Description)
+	if pb.Description != nil {
+		m.Description = types.StringValue(*pb.Description)
+	} else {
+		m.Description = types.StringValue("")
+	}
 	m.TriggerType = types.StringValue(pb.TriggerType)
-	m.TriggerConditions = normalizedFromRaw(pb.TriggerConditions)
-	m.ServiceID = nullableInt(pb.ServiceID)
+	m.TriggerConditions = normalizedFromRaw(rawFromMap(pb.TriggerConditions))
+	m.ServiceID = sdkutil.Int(pb.ServiceId)
 	m.SuppressDefaultNotifications = types.BoolValue(pb.SuppressDefaultNotifications)
 	m.IsActive = types.BoolValue(pb.IsActive)
 
-	steps := make([]PlaybookStepModel, len(pb.Steps))
-	for i, s := range pb.Steps {
+	var raw []stepResponse
+	if len(pb.Steps) > 0 {
+		b, err := json.Marshal(pb.Steps)
+		if err != nil {
+			diags.AddError("Error decoding playbook steps", err.Error())
+			return diags
+		}
+		if err := json.Unmarshal(b, &raw); err != nil {
+			diags.AddError("Error decoding playbook steps", err.Error())
+			return diags
+		}
+	}
+
+	steps := make([]PlaybookStepModel, len(raw))
+	for i, s := range raw {
 		steps[i] = PlaybookStepModel{
 			StepOrder:      types.Int64Value(int64(s.StepOrder)),
 			Name:           types.StringValue(s.Name),
 			ActionType:     types.StringValue(s.ActionType),
 			Config:         normalizedFromRaw(s.Config),
 			Conditions:     normalizedFromRaw(s.Conditions),
-			ParallelGroup:  stringOrNull(s.ParallelGroup),
+			ParallelGroup:  sdkutil.Str(s.ParallelGroup),
 			IsManual:       types.BoolValue(s.IsManual),
 			TimeoutSeconds: types.Int64Value(int64(s.TimeoutSeconds)),
 		}
 	}
 	m.Steps = steps
-	return nil
+	return diags
 }
 
-func rawFromNormalized(n jsontypes.Normalized) json.RawMessage {
+// objectFromNormalized decodes a normalized JSON object into the SDK's map shape,
+// nil when null or unknown.
+func objectFromNormalized(n jsontypes.Normalized) *map[string]interface{} {
 	if n.IsNull() || n.IsUnknown() {
 		return nil
 	}
-	return json.RawMessage(n.ValueString())
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(n.ValueString()), &m); err != nil {
+		return nil
+	}
+	return &m
+}
+
+// conditionsFromNormalized decodes a normalized JSON array into the SDK's typed
+// condition list, nil when null or unknown.
+func conditionsFromNormalized(n jsontypes.Normalized) *[]models.PlaybookCondition {
+	if n.IsNull() || n.IsUnknown() {
+		return nil
+	}
+	var c []models.PlaybookCondition
+	if err := json.Unmarshal([]byte(n.ValueString()), &c); err != nil {
+		return nil
+	}
+	return &c
+}
+
+// rawFromMap re-marshals the SDK's map-typed trigger conditions back into a raw
+// JSON blob so it can flow through jsontypes.Normalized unchanged.
+func rawFromMap(m *map[string]interface{}) json.RawMessage {
+	if m == nil {
+		return nil
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 func normalizedFromRaw(raw json.RawMessage) jsontypes.Normalized {
@@ -326,34 +417,4 @@ func normalizedFromRaw(raw json.RawMessage) jsontypes.Normalized {
 		return jsontypes.NewNormalizedNull()
 	}
 	return jsontypes.NewNormalizedValue(string(raw))
-}
-
-func optionalString(v types.String) *string {
-	if v.IsNull() || v.IsUnknown() {
-		return nil
-	}
-	s := v.ValueString()
-	return &s
-}
-
-func stringOrNull(p *string) types.String {
-	if p == nil {
-		return types.StringNull()
-	}
-	return types.StringValue(*p)
-}
-
-func optionalInt(v types.Int64) *int {
-	if v.IsNull() || v.IsUnknown() {
-		return nil
-	}
-	i := int(v.ValueInt64())
-	return &i
-}
-
-func nullableInt(p *int) types.Int64 {
-	if p == nil {
-		return types.Int64Null()
-	}
-	return types.Int64Value(int64(*p))
 }

@@ -15,7 +15,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/systeampl/terraform-provider-systeam/internal/client"
+	syschecks "github.com/systeampl/syschecks-go"
+	"github.com/systeampl/syschecks-go/models"
+	"github.com/systeampl/terraform-provider-systeam/internal/sdkutil"
 )
 
 var (
@@ -25,7 +27,7 @@ var (
 )
 
 type checkSLOResource struct {
-	client *client.Client
+	sdk *syschecks.Client
 }
 
 func NewResource() resource.Resource {
@@ -126,15 +128,15 @@ func (r *checkSLOResource) Configure(_ context.Context, req resource.ConfigureRe
 	if req.ProviderData == nil {
 		return
 	}
-	c, ok := req.ProviderData.(*client.Client)
+	sdk, ok := req.ProviderData.(*syschecks.Client)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Resource Configure Type",
-			fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData),
+			fmt.Sprintf("Expected *syschecks.Client, got: %T", req.ProviderData),
 		)
 		return
 	}
-	r.client = c
+	r.sdk = sdk
 }
 
 func (r *checkSLOResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -144,16 +146,26 @@ func (r *checkSLOResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
-	createReq := client.CheckSLOCreateRequest{
-		SLIType:                 plan.SLIType.ValueString(),
-		TargetPercentage:        plan.TargetPercentage.ValueFloat64(),
-		WindowDays:              int(plan.WindowDays.ValueInt64()),
-		NotifyOnBudgetWarn:      plan.NotifyOnBudgetWarn.ValueBool(),
-		BudgetWarnPct:           plan.BudgetWarnPct.ValueFloat64(),
-		NotifyOnBudgetExhausted: plan.NotifyOnBudgetExhausted.ValueBool(),
-		BurnRateAlertEnabled:    plan.BurnRateAlertEnabled.ValueBool(),
-		BurnRateThreshold:       plan.BurnRateThreshold.ValueFloat64(),
-		BurnRateWindowMinutes:   int(plan.BurnRateWindowMinutes.ValueInt64()),
+	sliType := plan.SLIType.ValueString()
+	targetPct := plan.TargetPercentage.ValueFloat64()
+	windowDays := int(plan.WindowDays.ValueInt64())
+	notifyWarn := plan.NotifyOnBudgetWarn.ValueBool()
+	budgetWarnPct := plan.BudgetWarnPct.ValueFloat64()
+	notifyExhausted := plan.NotifyOnBudgetExhausted.ValueBool()
+	burnRateEnabled := plan.BurnRateAlertEnabled.ValueBool()
+	burnRateThreshold := plan.BurnRateThreshold.ValueFloat64()
+	burnRateWindow := int(plan.BurnRateWindowMinutes.ValueInt64())
+
+	createReq := models.CreateCheckSloJSONRequestBody{
+		SliType:                 &sliType,
+		TargetPercentage:        &targetPct,
+		WindowDays:              &windowDays,
+		NotifyOnBudgetWarn:      &notifyWarn,
+		BudgetWarnPct:           &budgetWarnPct,
+		NotifyOnBudgetExhausted: &notifyExhausted,
+		BurnRateAlertEnabled:    &burnRateEnabled,
+		BurnRateThreshold:       &burnRateThreshold,
+		BurnRateWindowMinutes:   &burnRateWindow,
 	}
 
 	if !plan.LatencyThresholdMs.IsNull() && !plan.LatencyThresholdMs.IsUnknown() {
@@ -161,7 +173,7 @@ func (r *checkSLOResource) Create(ctx context.Context, req resource.CreateReques
 		createReq.LatencyThresholdMs = &v
 	}
 
-	slo, err := r.client.CreateCheckSLO(ctx, int(plan.CheckID.ValueInt64()), createReq)
+	slo, err := r.sdk.Checks.CreateCheckSlo(ctx, int(plan.CheckID.ValueInt64()), createReq)
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating check SLO", err.Error())
 		return
@@ -178,17 +190,21 @@ func (r *checkSLOResource) Read(ctx context.Context, req resource.ReadRequest, r
 		return
 	}
 
-	slo, err := r.client.GetCheckSLO(ctx, int(state.CheckID.ValueInt64()))
+	status, err := r.sdk.Checks.GetCheckSlo(ctx, int(state.CheckID.ValueInt64()))
 	if err != nil {
-		if apiErr, ok := err.(*client.APIError); ok && apiErr.IsNotFound() {
+		if sdkutil.IsNotFound(err) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
 		resp.Diagnostics.AddError("Error reading check SLO", err.Error())
 		return
 	}
+	if status.Slo == nil {
+		resp.State.RemoveResource(ctx)
+		return
+	}
 
-	mapCheckSLOToState(slo, &state)
+	mapCheckSLOToState(status.Slo, &state)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -209,7 +225,7 @@ func (r *checkSLOResource) Update(ctx context.Context, req resource.UpdateReques
 	burnRateThreshold := plan.BurnRateThreshold.ValueFloat64()
 	burnRateWindow := int(plan.BurnRateWindowMinutes.ValueInt64())
 
-	updateReq := client.CheckSLOUpdateRequest{
+	updateReq := models.UpdateCheckSloJSONRequestBody{
 		TargetPercentage:        &targetPct,
 		WindowDays:              &windowDays,
 		IsActive:                &isActive,
@@ -226,7 +242,7 @@ func (r *checkSLOResource) Update(ctx context.Context, req resource.UpdateReques
 		updateReq.LatencyThresholdMs = &v
 	}
 
-	slo, err := r.client.UpdateCheckSLO(ctx, int(plan.CheckID.ValueInt64()), int(plan.ID.ValueInt64()), updateReq)
+	slo, err := r.sdk.Checks.UpdateCheckSlo(ctx, int(plan.CheckID.ValueInt64()), int(plan.ID.ValueInt64()), updateReq)
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating check SLO", err.Error())
 		return
@@ -243,9 +259,8 @@ func (r *checkSLOResource) Delete(ctx context.Context, req resource.DeleteReques
 		return
 	}
 
-	err := r.client.DeleteCheckSLO(ctx, int(state.CheckID.ValueInt64()), int(state.ID.ValueInt64()))
-	if err != nil {
-		if apiErr, ok := err.(*client.APIError); ok && apiErr.IsNotFound() {
+	if _, err := r.sdk.Checks.DeleteCheckSlo(ctx, int(state.CheckID.ValueInt64()), int(state.ID.ValueInt64())); err != nil {
+		if sdkutil.IsNotFound(err) {
 			return
 		}
 		resp.Diagnostics.AddError("Error deleting check SLO", err.Error())
@@ -261,18 +276,18 @@ func (r *checkSLOResource) ImportState(ctx context.Context, req resource.ImportS
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("check_id"), checkID)...)
 }
 
-func mapCheckSLOToState(slo *client.CheckSLO, state *CheckSLOModel) {
-	state.ID = types.Int64Value(int64(slo.ID))
-	state.CheckID = types.Int64Value(int64(slo.CheckID))
-	state.SLIType = types.StringValue(slo.SLIType)
-	state.TargetPercentage = types.Float64Value(slo.TargetPercentage)
+func mapCheckSLOToState(slo *models.SLOResponse, state *CheckSLOModel) {
+	state.ID = types.Int64Value(int64(slo.Id))
+	state.CheckID = types.Int64Value(int64(slo.CheckId))
+	state.SLIType = types.StringValue(slo.SliType)
+	state.TargetPercentage = types.Float64Value(float64(slo.TargetPercentage))
 	state.WindowDays = types.Int64Value(int64(slo.WindowDays))
 	state.IsActive = types.BoolValue(slo.IsActive)
 	state.NotifyOnBudgetWarn = types.BoolValue(slo.NotifyOnBudgetWarn)
-	state.BudgetWarnPct = types.Float64Value(slo.BudgetWarnPct)
+	state.BudgetWarnPct = types.Float64Value(float64(slo.BudgetWarnPct))
 	state.NotifyOnBudgetExhausted = types.BoolValue(slo.NotifyOnBudgetExhausted)
 	state.BurnRateAlertEnabled = types.BoolValue(slo.BurnRateAlertEnabled)
-	state.BurnRateThreshold = types.Float64Value(slo.BurnRateThreshold)
+	state.BurnRateThreshold = types.Float64Value(float64(slo.BurnRateThreshold))
 	state.BurnRateWindowMinutes = types.Int64Value(int64(slo.BurnRateWindowMinutes))
 
 	if slo.LatencyThresholdMs != nil {

@@ -53,7 +53,36 @@ of `terraform`.
 | `systeam_contact_method` | Per-user contact methods (SMS / voice / email / push) |
 | `systeam_agent_registration_token` | One-time token to enrol a private/geo agent |
 
-Data source: `systeam_organization` (look up an organization by slug).
+### Data sources
+
+Look up resources created outside Terraform (in the UI or by another stack) and
+reference them for GitOps — by `slug` for the organization, by `name` (scoped to
+`organization_id`) for the rest:
+
+| Data source | Looks up |
+|---|---|
+| `systeam_organization` | An organization, by slug |
+| `systeam_team` | A team, by name |
+| `systeam_service` | A service, by name |
+| `systeam_project` | A project, by name |
+| `systeam_escalation_policy` | An escalation policy, by name |
+| `systeam_oncall_schedule` | An on-call schedule, by name |
+| `systeam_notification_channel` | A notification channel, by name |
+
+### Importing existing resources
+
+Every resource supports `terraform import` (except `systeam_agent_registration_token`,
+whose token is one-time and cannot be read back). Org-scoped resources use a
+composite `org_id:id`; the rest take a bare numeric id:
+
+```bash
+terraform import systeam_team.core        1:42     # org_id:id
+terraform import systeam_check.primary     5       # bare id
+```
+
+Two attributes cannot round-trip on import because the API never returns them:
+`systeam_contact_method.value` (masked server-side) and any write-only check
+secret. Set them in config; Terraform treats a change to `value` as a replace.
 
 Full per-resource documentation is in [`docs/`](docs/) and rendered on the
 [Terraform Registry](https://registry.terraform.io/providers/systeampl/systeam).

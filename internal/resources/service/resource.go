@@ -17,7 +17,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/systeampl/terraform-provider-systeam/internal/client"
+	syschecks "github.com/systeampl/syschecks-go"
+	"github.com/systeampl/syschecks-go/models"
+	"github.com/systeampl/terraform-provider-systeam/internal/sdkutil"
 )
 
 var (
@@ -27,7 +29,7 @@ var (
 )
 
 type serviceResource struct {
-	client *client.Client
+	sdk *syschecks.Client
 }
 
 func NewResource() resource.Resource {
@@ -110,15 +112,15 @@ func (r *serviceResource) Configure(_ context.Context, req resource.ConfigureReq
 	if req.ProviderData == nil {
 		return
 	}
-	c, ok := req.ProviderData.(*client.Client)
+	sdk, ok := req.ProviderData.(*syschecks.Client)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Resource Configure Type",
-			fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData),
+			fmt.Sprintf("Expected *syschecks.Client, got: %T", req.ProviderData),
 		)
 		return
 	}
-	r.client = c
+	r.sdk = sdk
 }
 
 func (r *serviceResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -134,22 +136,24 @@ func (r *serviceResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
-	svc, err := r.client.CreateService(ctx, int(plan.OrganizationID.ValueInt64()), client.ServiceCreateRequest{
+	svc, err := r.sdk.Services.CreateService(ctx, int(plan.OrganizationID.ValueInt64()), models.CreateServiceJSONRequestBody{
 		Name:                   plan.Name.ValueString(),
-		Description:            plan.Description.ValueString(),
-		RepoURL:                plan.RepoURL.ValueString(),
-		DocsURL:                plan.DocsURL.ValueString(),
-		OwnerTeamID:            optionalInt(plan.OwnerTeamID),
-		EscalationPolicyID:     optionalInt(plan.EscalationPolicyID),
-		Tier:                   plan.Tier.ValueString(),
-		NotificationChannelIDs: channelIDs,
+		Description:            sdkutil.StrPtr(plan.Description),
+		RepoUrl:                sdkutil.StrPtr(plan.RepoURL),
+		DocsUrl:                sdkutil.StrPtr(plan.DocsURL),
+		OwnerTeamId:            optionalInt(plan.OwnerTeamID),
+		EscalationPolicyId:     optionalInt(plan.EscalationPolicyID),
+		Tier:                   sdkutil.StrPtr(plan.Tier),
+		NotificationChannelIds: intSlicePtr(channelIDs),
 	})
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating service", err.Error())
 		return
 	}
 
-	resp.Diagnostics.Append(mapServiceToState(ctx, svc, &plan)...)
+	resp.Diagnostics.Append(applyService(ctx, &plan, svc.Id, svc.OrganizationId, svc.Name, svc.Slug,
+		svc.Description, svc.RepoUrl, svc.DocsUrl, svc.OwnerTeamId, svc.EscalationPolicyId, svc.Tier,
+		svc.IsActive, svc.NotificationChannels)...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -160,9 +164,9 @@ func (r *serviceResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 
-	svc, err := r.client.GetService(ctx, int(state.OrganizationID.ValueInt64()), int(state.ID.ValueInt64()))
+	svc, err := r.sdk.Services.GetService(ctx, int(state.OrganizationID.ValueInt64()), int(state.ID.ValueInt64()))
 	if err != nil {
-		if apiErr, ok := err.(*client.APIError); ok && apiErr.IsNotFound() {
+		if sdkutil.IsNotFound(err) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -170,7 +174,9 @@ func (r *serviceResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 
-	resp.Diagnostics.Append(mapServiceToState(ctx, svc, &state)...)
+	resp.Diagnostics.Append(applyService(ctx, &state, svc.Id, svc.OrganizationId, svc.Name, svc.Slug,
+		svc.Description, svc.RepoUrl, svc.DocsUrl, svc.OwnerTeamId, svc.EscalationPolicyId, svc.Tier,
+		svc.IsActive, svc.NotificationChannels)...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -187,22 +193,24 @@ func (r *serviceResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
-	svc, err := r.client.UpdateService(ctx, int(plan.OrganizationID.ValueInt64()), int(plan.ID.ValueInt64()), client.ServiceUpdateRequest{
-		Name:                   plan.Name.ValueString(),
-		Description:            plan.Description.ValueString(),
-		RepoURL:                plan.RepoURL.ValueString(),
-		DocsURL:                plan.DocsURL.ValueString(),
-		OwnerTeamID:            optionalInt(plan.OwnerTeamID),
-		EscalationPolicyID:     optionalInt(plan.EscalationPolicyID),
-		Tier:                   plan.Tier.ValueString(),
-		NotificationChannelIDs: channelIDs,
+	svc, err := r.sdk.Services.UpdateService(ctx, int(plan.OrganizationID.ValueInt64()), int(plan.ID.ValueInt64()), models.UpdateServiceJSONRequestBody{
+		Name:                   sdkutil.StrPtr(plan.Name),
+		Description:            sdkutil.StrPtr(plan.Description),
+		RepoUrl:                sdkutil.StrPtr(plan.RepoURL),
+		DocsUrl:                sdkutil.StrPtr(plan.DocsURL),
+		OwnerTeamId:            optionalInt(plan.OwnerTeamID),
+		EscalationPolicyId:     optionalInt(plan.EscalationPolicyID),
+		Tier:                   sdkutil.StrPtr(plan.Tier),
+		NotificationChannelIds: intSlicePtr(channelIDs),
 	})
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating service", err.Error())
 		return
 	}
 
-	resp.Diagnostics.Append(mapServiceToState(ctx, svc, &plan)...)
+	resp.Diagnostics.Append(applyService(ctx, &plan, svc.Id, svc.OrganizationId, svc.Name, svc.Slug,
+		svc.Description, svc.RepoUrl, svc.DocsUrl, svc.OwnerTeamId, svc.EscalationPolicyId, svc.Tier,
+		svc.IsActive, svc.NotificationChannels)...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -212,9 +220,8 @@ func (r *serviceResource) Delete(ctx context.Context, req resource.DeleteRequest
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	err := r.client.DeleteService(ctx, int(state.OrganizationID.ValueInt64()), int(state.ID.ValueInt64()))
-	if err != nil {
-		if apiErr, ok := err.(*client.APIError); ok && apiErr.IsNotFound() {
+	if _, err := r.sdk.Services.DeleteService(ctx, int(state.OrganizationID.ValueInt64()), int(state.ID.ValueInt64())); err != nil {
+		if sdkutil.IsNotFound(err) {
 			return
 		}
 		resp.Diagnostics.AddError("Error deleting service", err.Error())
@@ -263,27 +270,51 @@ func setToIntSlice(ctx context.Context, set types.Set) ([]int, diag.Diagnostics)
 	return out, diags
 }
 
-func mapServiceToState(ctx context.Context, svc *client.Service, m *ServiceModel) diag.Diagnostics {
-	m.ID = types.Int64Value(int64(svc.ID))
-	m.OrganizationID = types.Int64Value(int64(svc.OrganizationID))
-	m.Name = types.StringValue(svc.Name)
-	m.Slug = types.StringValue(svc.Slug)
-	m.Description = types.StringValue(svc.Description)
-	m.RepoURL = types.StringValue(svc.RepoURL)
-	m.DocsURL = types.StringValue(svc.DocsURL)
-	m.OwnerTeamID = nullableInt(svc.OwnerTeamID)
-	m.EscalationPolicyID = nullableInt(svc.EscalationPolicyID)
-	m.Tier = types.StringValue(svc.Tier)
-	m.IsActive = types.BoolValue(svc.IsActive)
+// intSlicePtr turns the plan's channel ids into a request pointer, nil when the
+// set is unset/empty — matching the previous omitempty semantics on the body.
+func intSlicePtr(ids []int) *[]int {
+	if len(ids) == 0 {
+		return nil
+	}
+	return &ids
+}
 
-	ids := svc.NotificationChannelIDs()
-	elems := make([]int64, len(ids))
-	for i, v := range ids {
-		elems[i] = int64(v)
+func applyService(ctx context.Context, m *ServiceModel,
+	id, orgID int, name, slug string,
+	description, repoURL, docsURL *string,
+	ownerTeamID, escalationPolicyID *int, tier string, isActive bool,
+	channels *[]models.ServiceNotificationChannelBrief,
+) diag.Diagnostics {
+	m.ID = types.Int64Value(int64(id))
+	m.OrganizationID = types.Int64Value(int64(orgID))
+	m.Name = types.StringValue(name)
+	m.Slug = types.StringValue(slug)
+	m.Description = strOrEmpty(description)
+	m.RepoURL = strOrEmpty(repoURL)
+	m.DocsURL = strOrEmpty(docsURL)
+	m.OwnerTeamID = nullableInt(ownerTeamID)
+	m.EscalationPolicyID = nullableInt(escalationPolicyID)
+	m.Tier = types.StringValue(tier)
+	m.IsActive = types.BoolValue(isActive)
+
+	elems := make([]int64, 0)
+	if channels != nil {
+		for _, c := range *channels {
+			elems = append(elems, int64(c.Id))
+		}
 	}
 	set, diags := types.SetValueFrom(ctx, types.Int64Type, elems)
 	m.NotificationChannelIDs = set
 	return diags
+}
+
+// strOrEmpty maps a response *string to a framework String, empty when nil —
+// preserving the previous always-non-null behavior for these computed fields.
+func strOrEmpty(p *string) types.String {
+	if p == nil {
+		return types.StringValue("")
+	}
+	return types.StringValue(*p)
 }
 
 func nullableInt(p *int) types.Int64 {

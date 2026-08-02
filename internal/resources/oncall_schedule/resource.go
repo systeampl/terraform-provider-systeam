@@ -17,7 +17,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/systeampl/terraform-provider-systeam/internal/client"
+	syschecks "github.com/systeampl/syschecks-go"
+	"github.com/systeampl/syschecks-go/models"
+	"github.com/systeampl/terraform-provider-systeam/internal/sdkutil"
 )
 
 var (
@@ -27,7 +29,7 @@ var (
 )
 
 type oncallScheduleResource struct {
-	client *client.Client
+	sdk *syschecks.Client
 }
 
 func NewResource() resource.Resource {
@@ -107,15 +109,15 @@ func (r *oncallScheduleResource) Configure(_ context.Context, req resource.Confi
 	if req.ProviderData == nil {
 		return
 	}
-	c, ok := req.ProviderData.(*client.Client)
+	sdk, ok := req.ProviderData.(*syschecks.Client)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Resource Configure Type",
-			fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData),
+			fmt.Sprintf("Expected *syschecks.Client, got: %T", req.ProviderData),
 		)
 		return
 	}
-	r.client = c
+	r.sdk = sdk
 }
 
 func (r *oncallScheduleResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -125,16 +127,14 @@ func (r *oncallScheduleResource) Create(ctx context.Context, req resource.Create
 		return
 	}
 
-	orgID := int(plan.OrganizationID.ValueInt64())
-	createReq := client.OnCallScheduleCreateRequest{
+	timezone := plan.Timezone.ValueString()
+	rotationType := plan.RotationType.ValueString()
+	schedule, err := r.sdk.Oncall.CreateSchedule(ctx, int(plan.OrganizationID.ValueInt64()), models.CreateScheduleJSONRequestBody{
 		Name:         plan.Name.ValueString(),
-		Timezone:     plan.Timezone.ValueString(),
-		RotationType: plan.RotationType.ValueString(),
-		IsActive:     plan.IsActive.ValueBool(),
-		Participants: participantsFromModel(plan.Participants),
-	}
-
-	schedule, err := r.client.CreateOnCallSchedule(ctx, orgID, createReq)
+		Timezone:     &timezone,
+		RotationType: &rotationType,
+		Participants: participantsToSDK(plan.Participants),
+	})
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating on-call schedule", err.Error())
 		return
@@ -151,12 +151,9 @@ func (r *oncallScheduleResource) Read(ctx context.Context, req resource.ReadRequ
 		return
 	}
 
-	orgID := int(state.OrganizationID.ValueInt64())
-	scheduleID := int(state.ID.ValueInt64())
-
-	schedule, err := r.client.GetOnCallSchedule(ctx, orgID, scheduleID)
+	schedule, err := r.sdk.Oncall.GetSchedule(ctx, int(state.OrganizationID.ValueInt64()), int(state.ID.ValueInt64()))
 	if err != nil {
-		if apiErr, ok := err.(*client.APIError); ok && apiErr.IsNotFound() {
+		if sdkutil.IsNotFound(err) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -175,22 +172,17 @@ func (r *oncallScheduleResource) Update(ctx context.Context, req resource.Update
 		return
 	}
 
-	orgID := int(plan.OrganizationID.ValueInt64())
-	scheduleID := int(plan.ID.ValueInt64())
-
 	name := plan.Name.ValueString()
 	timezone := plan.Timezone.ValueString()
 	rotationType := plan.RotationType.ValueString()
 	isActive := plan.IsActive.ValueBool()
-	updateReq := client.OnCallScheduleUpdateRequest{
+	schedule, err := r.sdk.Oncall.UpdateSchedule(ctx, int(plan.OrganizationID.ValueInt64()), int(plan.ID.ValueInt64()), models.UpdateScheduleJSONRequestBody{
 		Name:         &name,
 		Timezone:     &timezone,
 		RotationType: &rotationType,
 		IsActive:     &isActive,
-		Participants: participantsFromModel(plan.Participants),
-	}
-
-	schedule, err := r.client.UpdateOnCallSchedule(ctx, orgID, scheduleID, updateReq)
+		Participants: participantsToSDK(plan.Participants),
+	})
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating on-call schedule", err.Error())
 		return
@@ -206,13 +198,8 @@ func (r *oncallScheduleResource) Delete(ctx context.Context, req resource.Delete
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	orgID := int(state.OrganizationID.ValueInt64())
-	scheduleID := int(state.ID.ValueInt64())
-
-	err := r.client.DeleteOnCallSchedule(ctx, orgID, scheduleID)
-	if err != nil {
-		if apiErr, ok := err.(*client.APIError); ok && apiErr.IsNotFound() {
+	if _, err := r.sdk.Oncall.DeleteSchedule(ctx, int(state.OrganizationID.ValueInt64()), int(state.ID.ValueInt64())); err != nil {
+		if sdkutil.IsNotFound(err) {
 			return
 		}
 		resp.Diagnostics.AddError("Error deleting on-call schedule", err.Error())
@@ -251,33 +238,34 @@ func (r *oncallScheduleResource) ImportState(ctx context.Context, req resource.I
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), scheduleID)...)
 }
 
-func participantsFromModel(participants []OnCallParticipantModel) []client.OnCallParticipant {
-	if participants == nil {
+func participantsToSDK(participants []OnCallParticipantModel) *[]models.ParticipantSchema {
+	if len(participants) == 0 {
 		return nil
 	}
-	result := make([]client.OnCallParticipant, len(participants))
+	out := make([]models.ParticipantSchema, len(participants))
 	for i, p := range participants {
-		result[i] = client.OnCallParticipant{
-			UserID:   int(p.UserID.ValueInt64()),
-			Position: int(p.Position.ValueInt64()),
+		pos := int(p.Position.ValueInt64())
+		out[i] = models.ParticipantSchema{
+			UserId:   int(p.UserID.ValueInt64()),
+			Position: &pos,
 		}
 	}
-	return result
+	return &out
 }
 
-func mapScheduleToState(schedule *client.OnCallSchedule, state *OnCallScheduleModel) {
-	state.ID = types.Int64Value(int64(schedule.ID))
+func mapScheduleToState(schedule *models.OncallScheduleResponse, state *OnCallScheduleModel) {
+	state.ID = types.Int64Value(int64(schedule.Id))
 	state.Name = types.StringValue(schedule.Name)
-	state.OrganizationID = types.Int64Value(int64(schedule.OrganizationID))
+	state.OrganizationID = types.Int64Value(int64(schedule.OrganizationId))
 	state.Timezone = types.StringValue(schedule.Timezone)
 	state.RotationType = types.StringValue(schedule.RotationType)
 	state.IsActive = types.BoolValue(schedule.IsActive)
 
-	if len(schedule.Participants) > 0 {
-		participants := make([]OnCallParticipantModel, len(schedule.Participants))
-		for i, p := range schedule.Participants {
+	if schedule.Participants != nil && len(*schedule.Participants) > 0 {
+		participants := make([]OnCallParticipantModel, len(*schedule.Participants))
+		for i, p := range *schedule.Participants {
 			participants[i] = OnCallParticipantModel{
-				UserID:   types.Int64Value(int64(p.UserID)),
+				UserID:   types.Int64Value(int64(p.UserId)),
 				Position: types.Int64Value(int64(p.Position)),
 			}
 		}

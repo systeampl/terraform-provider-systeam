@@ -7,7 +7,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/systeampl/terraform-provider-systeam/internal/client"
+	syschecks "github.com/systeampl/syschecks-go"
+	"github.com/systeampl/terraform-provider-systeam/internal/sdkutil"
 )
 
 var (
@@ -16,7 +17,7 @@ var (
 )
 
 type organizationDataSource struct {
-	client *client.Client
+	sdk *syschecks.Client
 }
 
 func NewDataSource() datasource.DataSource {
@@ -43,10 +44,6 @@ func (d *organizationDataSource) Schema(_ context.Context, _ datasource.SchemaRe
 				Required:    true,
 				Description: "The slug of the organization.",
 			},
-			"description": schema.StringAttribute{
-				Computed:    true,
-				Description: "A description of the organization.",
-			},
 		},
 	}
 }
@@ -56,16 +53,16 @@ func (d *organizationDataSource) Configure(_ context.Context, req datasource.Con
 		return
 	}
 
-	c, ok := req.ProviderData.(*client.Client)
+	sdk, ok := req.ProviderData.(*syschecks.Client)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Data Source Configure Type",
-			fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData),
+			fmt.Sprintf("Expected *syschecks.Client, got: %T", req.ProviderData),
 		)
 		return
 	}
 
-	d.client = c
+	d.sdk = sdk
 }
 
 func (d *organizationDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
@@ -75,16 +72,15 @@ func (d *organizationDataSource) Read(ctx context.Context, req datasource.ReadRe
 		return
 	}
 
-	org, err := d.client.GetOrganizationBySlug(ctx, config.Slug.ValueString())
+	org, err := d.sdk.Organizations.GetOrganizationBySlug(ctx, config.Slug.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError("Error reading organization", err.Error())
 		return
 	}
 
-	config.ID = types.Int64Value(int64(org.ID))
+	config.ID = types.Int64Value(int64(org.Id))
 	config.Name = types.StringValue(org.Name)
-	config.Slug = types.StringValue(org.Slug)
-	config.Description = types.StringValue(org.Description)
+	config.Slug = sdkutil.Str(org.Slug)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &config)...)
 }

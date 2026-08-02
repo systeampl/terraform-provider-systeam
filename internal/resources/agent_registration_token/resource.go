@@ -13,7 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/systeampl/terraform-provider-systeam/internal/client"
+	syschecks "github.com/systeampl/syschecks-go"
 )
 
 var (
@@ -22,7 +22,7 @@ var (
 )
 
 type agentRegistrationTokenResource struct {
-	client *client.Client
+	sdk *syschecks.Client
 }
 
 func NewResource() resource.Resource {
@@ -86,15 +86,15 @@ func (r *agentRegistrationTokenResource) Configure(_ context.Context, req resour
 	if req.ProviderData == nil {
 		return
 	}
-	c, ok := req.ProviderData.(*client.Client)
+	sdk, ok := req.ProviderData.(*syschecks.Client)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Resource Configure Type",
-			fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData),
+			fmt.Sprintf("Expected *syschecks.Client, got: %T", req.ProviderData),
 		)
 		return
 	}
-	r.client = c
+	r.sdk = sdk
 }
 
 func (r *agentRegistrationTokenResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -104,11 +104,13 @@ func (r *agentRegistrationTokenResource) Create(ctx context.Context, req resourc
 		return
 	}
 
-	tok, err := r.client.CreateAgentRegistrationToken(ctx, client.AgentRegistrationTokenCreateRequest{
-		Name:           plan.Name.ValueString(),
-		Mode:           plan.Mode.ValueString(),
-		OrganizationID: int(plan.OrganizationID.ValueInt64()),
-	})
+	// Canonical mint is the org-scoped endpoint. It takes NO request body and only
+	// ever issues a PRIVATE-agent token for the whole organization. The `name` and
+	// `mode` schema inputs are therefore IGNORED by the API here — they are NOT sent.
+	// We keep them in the schema (and `name` in the synthetic id) for the
+	// practitioner's own bookkeeping, but the API never sees or echoes them, so
+	// `mode` stays whatever the plan set (default "private") and is not reconciled.
+	tok, err := r.sdk.Organizations.CreateOrgAgentRegistrationToken(ctx, int(plan.OrganizationID.ValueInt64()))
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating agent registration token", err.Error())
 		return
@@ -117,10 +119,6 @@ func (r *agentRegistrationTokenResource) Create(ctx context.Context, req resourc
 	plan.ID = types.StringValue(fmt.Sprintf("%d:%s", plan.OrganizationID.ValueInt64(), plan.Name.ValueString()))
 	plan.Token = types.StringValue(tok.Token)
 	plan.ExpiresAt = types.StringValue(tok.ExpiresAt)
-	// The server echoes the mode; trust it so 'geo' resolutions stick.
-	if tok.Mode != "" {
-		plan.Mode = types.StringValue(tok.Mode)
-	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 

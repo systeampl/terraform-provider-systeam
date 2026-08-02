@@ -2,8 +2,12 @@ package lifecycle_watch
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
@@ -12,20 +16,43 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/systeampl/terraform-provider-systeam/internal/client"
+	syschecks "github.com/systeampl/syschecks-go"
+	"github.com/systeampl/syschecks-go/models"
+	"github.com/systeampl/terraform-provider-systeam/internal/sdkutil"
 )
 
 var (
-	_ resource.Resource              = &lifecycleWatchResource{}
-	_ resource.ResourceWithConfigure = &lifecycleWatchResource{}
+	_ resource.Resource                = &lifecycleWatchResource{}
+	_ resource.ResourceWithConfigure   = &lifecycleWatchResource{}
+	_ resource.ResourceWithImportState = &lifecycleWatchResource{}
 )
 
 type lifecycleWatchResource struct {
-	client *client.Client
+	sdk *syschecks.Client
 }
 
 func NewResource() resource.Resource {
 	return &lifecycleWatchResource{}
+}
+
+func (r *lifecycleWatchResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	parts := strings.SplitN(req.ID, ":", 2)
+	if len(parts) != 2 {
+		resp.Diagnostics.AddError("Invalid import ID", "Expected import ID format: org_id:watch_id")
+		return
+	}
+	orgID, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid org_id in import ID", err.Error())
+		return
+	}
+	watchID, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid watch_id in import ID", err.Error())
+		return
+	}
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("organization_id"), orgID)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), watchID)...)
 }
 
 func (r *lifecycleWatchResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -101,15 +128,15 @@ func (r *lifecycleWatchResource) Configure(_ context.Context, req resource.Confi
 	if req.ProviderData == nil {
 		return
 	}
-	c, ok := req.ProviderData.(*client.Client)
+	sdk, ok := req.ProviderData.(*syschecks.Client)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Resource Configure Type",
-			fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData),
+			fmt.Sprintf("Expected *syschecks.Client, got: %T", req.ProviderData),
 		)
 		return
 	}
-	r.client = c
+	r.sdk = sdk
 }
 
 func (r *lifecycleWatchResource) upsert(ctx context.Context, plan *LifecycleWatchModel) error {
@@ -121,21 +148,37 @@ func (r *lifecycleWatchResource) upsert(ctx context.Context, plan *LifecycleWatc
 			channelIDs = append(channelIDs, int(v))
 		}
 	}
-	id, err := r.client.UpsertLifecycleWatch(ctx, int(plan.OrganizationID.ValueInt64()), client.LifecycleWatchUpsertRequest{
+
+	notifyOnNew := plan.NotifyOnNew.ValueBool()
+	notify90d := plan.Notify90d.ValueBool()
+	notify30d := plan.Notify30d.ValueBool()
+	notify7d := plan.Notify7d.ValueBool()
+
+	body := models.UpsertLifecycleWatchJSONRequestBody{
 		Vendor:       plan.Vendor.ValueString(),
-		Platform:     optionalString(plan.Platform),
-		ResourceID:   optionalString(plan.ResourceID),
-		ResourceType: plan.ResourceType.ValueString(),
-		NotifyOnNew:  plan.NotifyOnNew.ValueBool(),
-		Notify90d:    plan.Notify90d.ValueBool(),
-		Notify30d:    plan.Notify30d.ValueBool(),
-		Notify7d:     plan.Notify7d.ValueBool(),
-		ChannelIDs:   channelIDs,
-	})
+		Platform:     sdkutil.StrPtr(plan.Platform),
+		ResourceId:   sdkutil.StrPtr(plan.ResourceID),
+		ResourceType: sdkutil.StrPtr(plan.ResourceType),
+		NotifyOnNew:  &notifyOnNew,
+		Notify90d:    &notify90d,
+		Notify30d:    &notify30d,
+		Notify7d:     &notify7d,
+	}
+	if channelIDs != nil {
+		body.ChannelIds = &channelIDs
+	}
+
+	raw, err := r.sdk.Lifecycle.UpsertLifecycleWatch(ctx, int(plan.OrganizationID.ValueInt64()), body)
 	if err != nil {
 		return err
 	}
-	plan.ID = types.Int64Value(int64(id))
+	var res struct {
+		Id int `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return err
+	}
+	plan.ID = types.Int64Value(int64(res.Id))
 	return nil
 }
 
@@ -159,21 +202,21 @@ func (r *lifecycleWatchResource) Read(ctx context.Context, req resource.ReadRequ
 		return
 	}
 
-	watch, err := r.client.GetLifecycleWatch(ctx, int(state.OrganizationID.ValueInt64()), int(state.ID.ValueInt64()))
+	watch, err := r.sdk.Lifecycle.GetLifecycleWatch(ctx, int(state.OrganizationID.ValueInt64()), int(state.ID.ValueInt64()))
 	if err != nil {
+		if sdkutil.IsNotFound(err) {
+			resp.State.RemoveResource(ctx)
+			return
+		}
 		resp.Diagnostics.AddError("Error reading lifecycle watch", err.Error())
-		return
-	}
-	if watch == nil {
-		resp.State.RemoveResource(ctx)
 		return
 	}
 
 	// channel_ids is not returned by the API — leave state's value untouched.
-	state.Vendor = types.StringValue(watch.Vendor)
+	state.Vendor = sdkutil.Str(watch.Vendor)
 	state.ResourceType = types.StringValue(watch.ResourceType)
-	state.Platform = stringOrNull(watch.Platform)
-	state.ResourceID = stringOrNull(watch.ResourceID)
+	state.Platform = sdkutil.Str(watch.Platform)
+	state.ResourceID = sdkutil.Str(watch.ResourceId)
 	state.NotifyOnNew = types.BoolValue(watch.NotifyOnNew)
 	state.Notify90d = types.BoolValue(watch.Notify90d)
 	state.Notify30d = types.BoolValue(watch.Notify30d)
@@ -200,26 +243,10 @@ func (r *lifecycleWatchResource) Delete(ctx context.Context, req resource.Delete
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	err := r.client.DeleteLifecycleWatch(ctx, int(state.OrganizationID.ValueInt64()), int(state.ID.ValueInt64()))
-	if err != nil {
-		if apiErr, ok := err.(*client.APIError); ok && apiErr.IsNotFound() {
+	if _, err := r.sdk.Lifecycle.DeleteLifecycleWatch(ctx, int(state.OrganizationID.ValueInt64()), int(state.ID.ValueInt64())); err != nil {
+		if sdkutil.IsNotFound(err) {
 			return
 		}
 		resp.Diagnostics.AddError("Error deleting lifecycle watch", err.Error())
 	}
-}
-
-func optionalString(v types.String) *string {
-	if v.IsNull() || v.IsUnknown() {
-		return nil
-	}
-	s := v.ValueString()
-	return &s
-}
-
-func stringOrNull(p *string) types.String {
-	if p == nil {
-		return types.StringNull()
-	}
-	return types.StringValue(*p)
 }

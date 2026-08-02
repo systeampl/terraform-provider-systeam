@@ -13,7 +13,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/systeampl/terraform-provider-systeam/internal/client"
+	syschecks "github.com/systeampl/syschecks-go"
+	"github.com/systeampl/syschecks-go/models"
+	"github.com/systeampl/terraform-provider-systeam/internal/sdkutil"
 )
 
 var (
@@ -23,7 +25,7 @@ var (
 )
 
 type statusPageResource struct {
-	client *client.Client
+	sdk *syschecks.Client
 }
 
 func NewResource() resource.Resource {
@@ -97,15 +99,15 @@ func (r *statusPageResource) Configure(_ context.Context, req resource.Configure
 	if req.ProviderData == nil {
 		return
 	}
-	c, ok := req.ProviderData.(*client.Client)
+	sdk, ok := req.ProviderData.(*syschecks.Client)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Resource Configure Type",
-			fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData),
+			fmt.Sprintf("Expected *syschecks.Client, got: %T", req.ProviderData),
 		)
 		return
 	}
-	r.client = c
+	r.sdk = sdk
 }
 
 func (r *statusPageResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -121,23 +123,17 @@ func (r *statusPageResource) Create(ctx context.Context, req resource.CreateRequ
 		return
 	}
 
-	createReq := client.StatusPageCreateRequest{
-		Name:     plan.Name.ValueString(),
-		Slug:     plan.Slug.ValueString(),
-		IsPublic: plan.IsPublic.ValueBool(),
-		CheckIDs: checkIDs,
-	}
-	if !plan.Description.IsNull() && !plan.Description.IsUnknown() {
-		createReq.Description = plan.Description.ValueString()
-	}
-	if !plan.CustomDomain.IsNull() && !plan.CustomDomain.IsUnknown() {
-		createReq.CustomDomain = plan.CustomDomain.ValueString()
-	}
-	if !plan.LogoURL.IsNull() && !plan.LogoURL.IsUnknown() {
-		createReq.LogoURL = plan.LogoURL.ValueString()
+	createBody := models.CreateStatusPageJSONRequestBody{
+		Name:         plan.Name.ValueString(),
+		Slug:         plan.Slug.ValueString(),
+		IsPublic:     plan.IsPublic.ValueBoolPointer(),
+		CheckIds:     checkIDs,
+		Description:  sdkutil.StrPtr(plan.Description),
+		CustomDomain: sdkutil.StrPtr(plan.CustomDomain),
+		LogoUrl:      sdkutil.StrPtr(plan.LogoURL),
 	}
 
-	page, err := r.client.CreateStatusPage(ctx, createReq)
+	page, err := r.sdk.StatusPages.CreateStatusPage(ctx, createBody)
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating status page", err.Error())
 		return
@@ -154,9 +150,9 @@ func (r *statusPageResource) Read(ctx context.Context, req resource.ReadRequest,
 		return
 	}
 
-	page, err := r.client.GetStatusPage(ctx, int(state.ID.ValueInt64()))
+	page, err := r.sdk.StatusPages.GetStatusPage(ctx, int(state.ID.ValueInt64()))
 	if err != nil {
-		if apiErr, ok := err.(*client.APIError); ok && apiErr.IsNotFound() {
+		if sdkutil.IsNotFound(err) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -186,28 +182,18 @@ func (r *statusPageResource) Update(ctx context.Context, req resource.UpdateRequ
 	isPublic := plan.IsPublic.ValueBool()
 	isActive := plan.IsActive.ValueBool()
 
-	updateReq := client.StatusPageUpdateRequest{
-		Name:     &name,
-		Slug:     &slug,
-		IsPublic: &isPublic,
-		IsActive: &isActive,
-		CheckIDs: checkIDs,
+	updateBody := models.UpdateStatusPageJSONRequestBody{
+		Name:         &name,
+		Slug:         &slug,
+		IsPublic:     &isPublic,
+		IsActive:     &isActive,
+		CheckIds:     &checkIDs,
+		Description:  sdkutil.StrPtr(plan.Description),
+		CustomDomain: sdkutil.StrPtr(plan.CustomDomain),
+		LogoUrl:      sdkutil.StrPtr(plan.LogoURL),
 	}
 
-	if !plan.Description.IsNull() && !plan.Description.IsUnknown() {
-		v := plan.Description.ValueString()
-		updateReq.Description = &v
-	}
-	if !plan.CustomDomain.IsNull() && !plan.CustomDomain.IsUnknown() {
-		v := plan.CustomDomain.ValueString()
-		updateReq.CustomDomain = &v
-	}
-	if !plan.LogoURL.IsNull() && !plan.LogoURL.IsUnknown() {
-		v := plan.LogoURL.ValueString()
-		updateReq.LogoURL = &v
-	}
-
-	page, err := r.client.UpdateStatusPage(ctx, int(plan.ID.ValueInt64()), updateReq)
+	page, err := r.sdk.StatusPages.UpdateStatusPage(ctx, int(plan.ID.ValueInt64()), updateBody)
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating status page", err.Error())
 		return
@@ -224,9 +210,8 @@ func (r *statusPageResource) Delete(ctx context.Context, req resource.DeleteRequ
 		return
 	}
 
-	err := r.client.DeleteStatusPage(ctx, int(state.ID.ValueInt64()))
-	if err != nil {
-		if apiErr, ok := err.(*client.APIError); ok && apiErr.IsNotFound() {
+	if _, err := r.sdk.StatusPages.DeleteStatusPage(ctx, int(state.ID.ValueInt64())); err != nil {
+		if sdkutil.IsNotFound(err) {
 			return
 		}
 		resp.Diagnostics.AddError("Error deleting status page", err.Error())
@@ -242,34 +227,43 @@ func (r *statusPageResource) ImportState(ctx context.Context, req resource.Impor
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), id)...)
 }
 
-func mapStatusPageToState(ctx context.Context, page *client.StatusPage, state *StatusPageModel, diags *diag.Diagnostics) {
-	state.ID = types.Int64Value(int64(page.ID))
+func derefStr(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+func mapStatusPageToState(ctx context.Context, page *models.StatusPageResponse, state *StatusPageModel, diags *diag.Diagnostics) {
+	state.ID = types.Int64Value(int64(page.Id))
 	state.Name = types.StringValue(page.Name)
 	state.Slug = types.StringValue(page.Slug)
 	state.IsPublic = types.BoolValue(page.IsPublic)
 	state.IsActive = types.BoolValue(page.IsActive)
-	state.OrganizationID = types.Int64Value(int64(page.OrganizationID))
+	if page.OrganizationId != nil {
+		state.OrganizationID = types.Int64Value(int64(*page.OrganizationId))
+	}
 
-	if page.Description != "" {
-		state.Description = types.StringValue(page.Description)
+	if desc := derefStr(page.Description); desc != "" {
+		state.Description = types.StringValue(desc)
 	} else if state.Description.IsNull() {
 		state.Description = types.StringNull()
 	}
 
-	if page.CustomDomain != "" {
-		state.CustomDomain = types.StringValue(page.CustomDomain)
+	if domain := derefStr(page.CustomDomain); domain != "" {
+		state.CustomDomain = types.StringValue(domain)
 	} else if state.CustomDomain.IsNull() {
 		state.CustomDomain = types.StringNull()
 	}
 
-	if page.LogoURL != "" {
-		state.LogoURL = types.StringValue(page.LogoURL)
+	if logo := derefStr(page.LogoUrl); logo != "" {
+		state.LogoURL = types.StringValue(logo)
 	} else if state.LogoURL.IsNull() {
 		state.LogoURL = types.StringNull()
 	}
 
-	checkIDValues := make([]types.Int64, len(page.CheckIDs))
-	for i, id := range page.CheckIDs {
+	checkIDValues := make([]types.Int64, len(page.CheckIds))
+	for i, id := range page.CheckIds {
 		checkIDValues[i] = types.Int64Value(int64(id))
 	}
 	listVal, d := types.ListValueFrom(ctx, types.Int64Type, checkIDValues)

@@ -21,6 +21,5 @@ Look up a SysTeam Healthchecks organization by slug.
 
 ### Read-Only
 
-- `description` (String) A description of the organization.
 - `id` (Number) The unique identifier of the organization.
 - `name` (String) The name of the organization.

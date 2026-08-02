@@ -2,6 +2,7 @@ package integration_key_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -9,8 +10,8 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	syschecks "github.com/systeampl/syschecks-go"
 	"github.com/systeampl/terraform-provider-systeam/internal/acctest"
-	"github.com/systeampl/terraform-provider-systeam/internal/client"
 )
 
 // TestAccIntegrationKey proves the resource round-trips through the LIVE API:
@@ -75,15 +76,30 @@ resource "systeam_integration_key" "test" {
 }
 
 // checkIntegrationKeyRevoked hits the LIVE API after destroy and asserts the key
-// is gone (GetIntegrationKey treats a revoked key as gone) — proving Terraform's
-// destroy actually revoked it, not just dropped it from state.
+// is gone — the list endpoint returns a revoked key with is_active=false (or omits
+// it), so either state proves Terraform's destroy actually revoked it rather than
+// just dropping it from state.
 func checkIntegrationKeyRevoked(orgID string) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
 		org, err := strconv.Atoi(orgID)
 		if err != nil {
 			return fmt.Errorf("bad org id %q: %w", orgID, err)
 		}
-		c := client.NewClient(os.Getenv("SYSTEAM_API_URL"), os.Getenv("SYSTEAM_API_TOKEN"))
+		sdk, err := syschecks.New(os.Getenv("SYSTEAM_API_URL"), os.Getenv("SYSTEAM_API_TOKEN"))
+		if err != nil {
+			return fmt.Errorf("building SDK client: %w", err)
+		}
+		raw, err := sdk.IntegrationKeys.ListIntegrationKeys(context.Background(), org)
+		if err != nil {
+			return fmt.Errorf("listing integration keys after destroy: %w", err)
+		}
+		var keys []struct {
+			ID       int  `json:"id"`
+			IsActive bool `json:"is_active"`
+		}
+		if err := json.Unmarshal(raw, &keys); err != nil {
+			return fmt.Errorf("decoding integration keys: %w", err)
+		}
 		for _, rs := range s.RootModule().Resources {
 			if rs.Type != "systeam_integration_key" {
 				continue
@@ -92,12 +108,10 @@ func checkIntegrationKeyRevoked(orgID string) resource.TestCheckFunc {
 			if err != nil {
 				return fmt.Errorf("bad key id in state: %w", err)
 			}
-			key, err := c.GetIntegrationKey(context.Background(), org, id)
-			if err != nil {
-				return fmt.Errorf("checking key %d after destroy: %w", id, err)
-			}
-			if key != nil {
-				return fmt.Errorf("integration key %d still active after destroy", id)
+			for _, k := range keys {
+				if k.ID == id && k.IsActive {
+					return fmt.Errorf("integration key %d still active after destroy", id)
+				}
 			}
 		}
 		return nil

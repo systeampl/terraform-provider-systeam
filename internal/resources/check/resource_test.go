@@ -29,14 +29,20 @@ func TestJSONObjectSemanticEquality(t *testing.T) {
 	}
 }
 
-func TestRawToNormalized(t *testing.T) {
-	if !rawToNormalized(nil).IsNull() {
-		t.Error("nil raw → null")
+func TestMapToNormalized(t *testing.T) {
+	if !mapToNormalized(nil).IsNull() {
+		t.Error("nil map → null")
 	}
-	if !rawToNormalized([]byte("null")).IsNull() {
-		t.Error("JSON null → null")
+	if m := (map[string]interface{}{"a": float64(1)}); mapToNormalized(&m).IsNull() {
+		t.Error("non-empty map must not be null")
 	}
-	if rawToNormalized([]byte(`{"a":1}`)).IsNull() {
-		t.Error("non-empty JSON must not be null")
+}
+
+func TestSliceToNormalized(t *testing.T) {
+	if !sliceToNormalized(nil).IsNull() {
+		t.Error("nil slice → null")
+	}
+	if s := ([]interface{}{"a"}); sliceToNormalized(&s).IsNull() {
+		t.Error("non-empty slice must not be null")
 	}
 }

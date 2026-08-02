@@ -2,6 +2,7 @@ package integration_key
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -17,7 +18,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/systeampl/terraform-provider-systeam/internal/client"
+	syschecks "github.com/systeampl/syschecks-go"
+	"github.com/systeampl/syschecks-go/models"
+	"github.com/systeampl/terraform-provider-systeam/internal/sdkutil"
 )
 
 var (
@@ -27,11 +30,25 @@ var (
 )
 
 type integrationKeyResource struct {
-	client *client.Client
+	sdk *syschecks.Client
 }
 
 func NewResource() resource.Resource {
 	return &integrationKeyResource{}
+}
+
+// rawKey decodes the integration-key JSON the API returns. The endpoints are not
+// modelled in the OpenAPI spec (the SDK returns json.RawMessage), so we decode
+// here. The secret token comes back under "key", only in the create response.
+type rawKey struct {
+	ID                    int    `json:"id"`
+	Name                  string `json:"name"`
+	TokenPrefix           string `json:"token_prefix"`
+	EscalationPolicyID    int    `json:"escalation_policy_id"`
+	IsActive              bool   `json:"is_active"`
+	GroupingType          string `json:"grouping_type"`
+	GroupingWindowSeconds int    `json:"grouping_window_seconds"`
+	Token                 string `json:"key,omitempty"`
 }
 
 func (r *integrationKeyResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -88,8 +105,8 @@ func (r *integrationKeyResource) Schema(_ context.Context, _ resource.SchemaRequ
 				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 			"token": schema.StringAttribute{
-				Computed:    true,
-				Sensitive:   true,
+				Computed:  true,
+				Sensitive: true,
 				Description: "The full secret routing key. Returned ONLY at creation; put it in your " +
 					"Alertmanager/Grafana webhook URL. It is not readable afterwards, so it is preserved " +
 					"in state from the create.",
@@ -107,15 +124,15 @@ func (r *integrationKeyResource) Configure(_ context.Context, req resource.Confi
 	if req.ProviderData == nil {
 		return
 	}
-	c, ok := req.ProviderData.(*client.Client)
+	sdk, ok := req.ProviderData.(*syschecks.Client)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Resource Configure Type",
-			fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData),
+			fmt.Sprintf("Expected *syschecks.Client, got: %T", req.ProviderData),
 		)
 		return
 	}
-	r.client = c
+	r.sdk = sdk
 }
 
 func (r *integrationKeyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -125,21 +142,26 @@ func (r *integrationKeyResource) Create(ctx context.Context, req resource.Create
 		return
 	}
 
-	orgID := int(plan.OrganizationID.ValueInt64())
-	key, err := r.client.CreateIntegrationKey(ctx, orgID, client.IntegrationKeyCreateRequest{
+	raw, err := r.sdk.IntegrationKeys.CreateIntegrationKey(ctx, int(plan.OrganizationID.ValueInt64()), models.IntegrationKeyCreate{
 		Name:                  plan.Name.ValueString(),
-		EscalationPolicyID:    int(plan.EscalationPolicyID.ValueInt64()),
-		GroupingType:          plan.GroupingType.ValueString(),
-		GroupingWindowSeconds: int(plan.GroupingWindowSeconds.ValueInt64()),
+		EscalationPolicyId:    int(plan.EscalationPolicyID.ValueInt64()),
+		GroupingType:          sdkutil.StrPtr(plan.GroupingType),
+		GroupingWindowSeconds: sdkutil.IntPtr(plan.GroupingWindowSeconds),
 	})
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating integration key", err.Error())
 		return
 	}
 
+	var key rawKey
+	if err := json.Unmarshal(raw, &key); err != nil {
+		resp.Diagnostics.AddError("Error decoding integration key", err.Error())
+		return
+	}
+
 	// The raw token is only here, in the create response — capture it into state.
 	plan.Token = types.StringValue(key.Token)
-	mapKeyToState(key, &plan)
+	mapKeyToState(&key, &plan)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -153,20 +175,38 @@ func (r *integrationKeyResource) Read(ctx context.Context, req resource.ReadRequ
 	orgID := int(state.OrganizationID.ValueInt64())
 	keyID := int(state.ID.ValueInt64())
 
-	key, err := r.client.GetIntegrationKey(ctx, orgID, keyID)
+	// No get-by-id endpoint: list and match. A revoked key stays in the list with
+	// is_active=false — treat that (and absence) as gone so a plan recreates it.
+	raw, err := r.sdk.IntegrationKeys.ListIntegrationKeys(ctx, orgID)
 	if err != nil {
+		if sdkutil.IsNotFound(err) {
+			resp.State.RemoveResource(ctx)
+			return
+		}
 		resp.Diagnostics.AddError("Error reading integration key", err.Error())
 		return
 	}
-	if key == nil {
-		// Revoked/deleted out of band — drop it so a plan recreates it.
-		resp.State.RemoveResource(ctx)
+
+	var keys []rawKey
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		resp.Diagnostics.AddError("Error decoding integration keys", err.Error())
 		return
 	}
 
-	// The token is never returned by list/read; keep whatever the create stored.
-	mapKeyToState(key, &state)
-	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+	for i := range keys {
+		if keys[i].ID != keyID {
+			continue
+		}
+		if !keys[i].IsActive {
+			resp.State.RemoveResource(ctx)
+			return
+		}
+		// The token is never returned by list/read; keep whatever the create stored.
+		mapKeyToState(&keys[i], &state)
+		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+		return
+	}
+	resp.State.RemoveResource(ctx)
 }
 
 func (r *integrationKeyResource) Update(_ context.Context, _ resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -185,9 +225,8 @@ func (r *integrationKeyResource) Delete(ctx context.Context, req resource.Delete
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	err := r.client.DeleteIntegrationKey(ctx, int(state.OrganizationID.ValueInt64()), int(state.ID.ValueInt64()))
-	if err != nil {
-		if apiErr, ok := err.(*client.APIError); ok && apiErr.IsNotFound() {
+	if _, err := r.sdk.IntegrationKeys.RevokeIntegrationKey(ctx, int(state.OrganizationID.ValueInt64()), int(state.ID.ValueInt64())); err != nil {
+		if sdkutil.IsNotFound(err) {
 			return
 		}
 		resp.Diagnostics.AddError("Error deleting integration key", err.Error())
@@ -215,7 +254,7 @@ func (r *integrationKeyResource) ImportState(ctx context.Context, req resource.I
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), keyID)...)
 }
 
-func mapKeyToState(key *client.IntegrationKey, m *IntegrationKeyModel) {
+func mapKeyToState(key *rawKey, m *IntegrationKeyModel) {
 	m.ID = types.Int64Value(int64(key.ID))
 	m.Name = types.StringValue(key.Name)
 	m.EscalationPolicyID = types.Int64Value(int64(key.EscalationPolicyID))

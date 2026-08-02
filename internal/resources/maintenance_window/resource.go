@@ -17,7 +17,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/systeampl/terraform-provider-systeam/internal/client"
+	syschecks "github.com/systeampl/syschecks-go"
+	"github.com/systeampl/syschecks-go/models"
+	"github.com/systeampl/terraform-provider-systeam/internal/sdkutil"
 )
 
 var (
@@ -27,7 +29,7 @@ var (
 )
 
 type maintenanceWindowResource struct {
-	client *client.Client
+	sdk *syschecks.Client
 }
 
 func NewResource() resource.Resource {
@@ -119,15 +121,15 @@ func (r *maintenanceWindowResource) Configure(_ context.Context, req resource.Co
 	if req.ProviderData == nil {
 		return
 	}
-	c, ok := req.ProviderData.(*client.Client)
+	sdk, ok := req.ProviderData.(*syschecks.Client)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Resource Configure Type",
-			fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData),
+			fmt.Sprintf("Expected *syschecks.Client, got: %T", req.ProviderData),
 		)
 		return
 	}
-	r.client = c
+	r.sdk = sdk
 }
 
 func (r *maintenanceWindowResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -140,30 +142,29 @@ func (r *maintenanceWindowResource) Create(ctx context.Context, req resource.Cre
 	checkIDs := extractIntList(ctx, plan.CheckIDs)
 	projectIDs := extractIntList(ctx, plan.ProjectIDs)
 
-	createReq := client.MaintenanceWindowCreateRequest{
-		Name:        plan.Name.ValueString(),
-		Description: plan.Description.ValueString(),
-		StartTime:   plan.StartTime.ValueString(),
-		EndTime:     plan.EndTime.ValueString(),
-		Timezone:    plan.Timezone.ValueString(),
-		CheckIDs:    checkIDs,
-		ProjectIDs:  projectIDs,
-		IsRecurring: plan.IsRecurring.ValueBool(),
-		IsActive:    plan.IsActive.ValueBool(),
+	createReq := models.CreateMaintenanceWindowJSONRequestBody{
+		Name:              plan.Name.ValueString(),
+		Description:       sdkutil.StrPtr(plan.Description),
+		StartTime:         plan.StartTime.ValueString(),
+		EndTime:           plan.EndTime.ValueString(),
+		Timezone:          sdkutil.StrPtr(plan.Timezone),
+		CheckIds:          &checkIDs,
+		ProjectIds:        &projectIDs,
+		IsRecurring:       plan.IsRecurring.ValueBoolPointer(),
+		RecurrencePattern: normToPattern(plan.RecurrencePattern),
 	}
 	if !plan.OrganizationID.IsNull() && !plan.OrganizationID.IsUnknown() {
 		v := int(plan.OrganizationID.ValueInt64())
-		createReq.OrganizationID = &v
+		createReq.OrganizationId = &v
 	}
-	createReq.RecurrencePattern = normToRaw(plan.RecurrencePattern)
 
-	mw, err := r.client.CreateMaintenanceWindow(ctx, createReq)
+	mw, err := r.sdk.Maintenance.CreateMaintenanceWindow(ctx, createReq)
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating maintenance window", err.Error())
 		return
 	}
 
-	mapMaintenanceWindowToState(ctx, mw, &plan)
+	mapMaintenanceWindowToState(mw, &plan)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -174,9 +175,9 @@ func (r *maintenanceWindowResource) Read(ctx context.Context, req resource.ReadR
 		return
 	}
 
-	mw, err := r.client.GetMaintenanceWindow(ctx, int(state.ID.ValueInt64()))
+	mw, err := r.sdk.Maintenance.GetMaintenanceWindow(ctx, int(state.ID.ValueInt64()))
 	if err != nil {
-		if apiErr, ok := err.(*client.APIError); ok && apiErr.IsNotFound() {
+		if sdkutil.IsNotFound(err) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -184,7 +185,7 @@ func (r *maintenanceWindowResource) Read(ctx context.Context, req resource.ReadR
 		return
 	}
 
-	mapMaintenanceWindowToState(ctx, mw, &state)
+	mapMaintenanceWindowToState(mw, &state)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -195,40 +196,29 @@ func (r *maintenanceWindowResource) Update(ctx context.Context, req resource.Upd
 		return
 	}
 
-	name := plan.Name.ValueString()
-	desc := plan.Description.ValueString()
-	startTime := plan.StartTime.ValueString()
-	endTime := plan.EndTime.ValueString()
-	tz := plan.Timezone.ValueString()
-	isRecurring := plan.IsRecurring.ValueBool()
-	isActive := plan.IsActive.ValueBool()
 	checkIDs := extractIntList(ctx, plan.CheckIDs)
 	projectIDs := extractIntList(ctx, plan.ProjectIDs)
 
-	updateReq := client.MaintenanceWindowUpdateRequest{
-		Name:        &name,
-		Description: &desc,
-		StartTime:   &startTime,
-		EndTime:     &endTime,
-		Timezone:    &tz,
-		CheckIDs:    &checkIDs,
-		ProjectIDs:  &projectIDs,
-		IsRecurring: &isRecurring,
-		IsActive:    &isActive,
+	updateReq := models.UpdateMaintenanceWindowJSONRequestBody{
+		Name:              plan.Name.ValueStringPointer(),
+		Description:       sdkutil.StrPtr(plan.Description),
+		StartTime:         plan.StartTime.ValueStringPointer(),
+		EndTime:           plan.EndTime.ValueStringPointer(),
+		Timezone:          sdkutil.StrPtr(plan.Timezone),
+		CheckIds:          &checkIDs,
+		ProjectIds:        &projectIDs,
+		IsRecurring:       plan.IsRecurring.ValueBoolPointer(),
+		IsActive:          plan.IsActive.ValueBoolPointer(),
+		RecurrencePattern: normToPattern(plan.RecurrencePattern),
 	}
-	if !plan.OrganizationID.IsNull() && !plan.OrganizationID.IsUnknown() {
-		v := int(plan.OrganizationID.ValueInt64())
-		updateReq.OrganizationID = &v
-	}
-	updateReq.RecurrencePattern = normToRaw(plan.RecurrencePattern)
 
-	mw, err := r.client.UpdateMaintenanceWindow(ctx, int(plan.ID.ValueInt64()), updateReq)
+	mw, err := r.sdk.Maintenance.UpdateMaintenanceWindow(ctx, int(plan.ID.ValueInt64()), updateReq)
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating maintenance window", err.Error())
 		return
 	}
 
-	mapMaintenanceWindowToState(ctx, mw, &plan)
+	mapMaintenanceWindowToState(mw, &plan)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -239,9 +229,8 @@ func (r *maintenanceWindowResource) Delete(ctx context.Context, req resource.Del
 		return
 	}
 
-	err := r.client.DeleteMaintenanceWindow(ctx, int(state.ID.ValueInt64()))
-	if err != nil {
-		if apiErr, ok := err.(*client.APIError); ok && apiErr.IsNotFound() {
+	if _, err := r.sdk.Maintenance.DeleteMaintenanceWindow(ctx, int(state.ID.ValueInt64())); err != nil {
+		if sdkutil.IsNotFound(err) {
 			return
 		}
 		resp.Diagnostics.AddError("Error deleting maintenance window", err.Error())
@@ -270,46 +259,68 @@ func extractIntList(ctx context.Context, list types.List) []int {
 	return result
 }
 
-func mapMaintenanceWindowToState(ctx context.Context, mw *client.MaintenanceWindow, state *MaintenanceWindowModel) {
-	state.ID = types.Int64Value(int64(mw.ID))
+func mapMaintenanceWindowToState(mw *models.MaintenanceWindowResponse, state *MaintenanceWindowModel) {
+	state.ID = types.Int64Value(int64(mw.Id))
 	state.Name = types.StringValue(mw.Name)
-	state.Description = types.StringValue(mw.Description)
+	state.Description = types.StringValue(derefStr(mw.Description))
 	state.StartTime = types.StringValue(mw.StartTime)
 	state.EndTime = types.StringValue(mw.EndTime)
-	state.Timezone = types.StringValue(mw.Timezone)
-	state.IsRecurring = types.BoolValue(mw.IsRecurring)
+	state.Timezone = types.StringValue(derefStr(mw.Timezone))
+	state.IsRecurring = types.BoolValue(derefBool(mw.IsRecurring))
 	state.IsActive = types.BoolValue(mw.IsActive)
-	if mw.OrganizationID != nil {
-		state.OrganizationID = types.Int64Value(int64(*mw.OrganizationID))
+	if mw.OrganizationId != nil {
+		state.OrganizationID = types.Int64Value(int64(*mw.OrganizationId))
 	} else {
 		state.OrganizationID = types.Int64Null()
 	}
-	state.RecurrencePattern = rawToNormalized(mw.RecurrencePattern)
+	state.RecurrencePattern = patternToNormalized(mw.RecurrencePattern)
 
-	checkIDValues := make([]attr.Value, len(mw.CheckIDs))
-	for i, id := range mw.CheckIDs {
-		checkIDValues[i] = types.Int64Value(int64(id))
-	}
-	state.CheckIDs, _ = types.ListValue(types.Int64Type, checkIDValues)
-
-	projectIDValues := make([]attr.Value, len(mw.ProjectIDs))
-	for i, id := range mw.ProjectIDs {
-		projectIDValues[i] = types.Int64Value(int64(id))
-	}
-	state.ProjectIDs, _ = types.ListValue(types.Int64Type, projectIDValues)
+	state.CheckIDs = intListToState(mw.CheckIds)
+	state.ProjectIDs = intListToState(mw.ProjectIds)
 }
 
-func normToRaw(n jsontypes.Normalized) json.RawMessage {
+func intListToState(ids *[]int) types.List {
+	var src []int
+	if ids != nil {
+		src = *ids
+	}
+	values := make([]attr.Value, len(src))
+	for i, id := range src {
+		values[i] = types.Int64Value(int64(id))
+	}
+	list, _ := types.ListValue(types.Int64Type, values)
+	return list
+}
+
+func normToPattern(n jsontypes.Normalized) *map[string]interface{} {
 	if n.IsNull() || n.IsUnknown() {
 		return nil
 	}
-	return json.RawMessage(n.ValueString())
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(n.ValueString()), &m); err != nil {
+		return nil
+	}
+	return &m
 }
 
-func rawToNormalized(raw json.RawMessage) jsontypes.Normalized {
-	s := string(raw)
-	if len(raw) == 0 || s == "null" {
+func patternToNormalized(p *map[string]interface{}) jsontypes.Normalized {
+	if p == nil {
 		return jsontypes.NewNormalizedNull()
 	}
-	return jsontypes.NewNormalizedValue(s)
+	b, err := json.Marshal(*p)
+	if err != nil {
+		return jsontypes.NewNormalizedNull()
+	}
+	return jsontypes.NewNormalizedValue(string(b))
+}
+
+func derefStr(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+func derefBool(p *bool) bool {
+	return p != nil && *p
 }

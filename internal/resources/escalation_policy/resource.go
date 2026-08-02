@@ -16,7 +16,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/systeampl/terraform-provider-systeam/internal/client"
+	syschecks "github.com/systeampl/syschecks-go"
+	"github.com/systeampl/syschecks-go/models"
+	"github.com/systeampl/terraform-provider-systeam/internal/sdkutil"
 )
 
 var (
@@ -26,7 +28,7 @@ var (
 )
 
 type escalationPolicyResource struct {
-	client *client.Client
+	sdk *syschecks.Client
 }
 
 func NewResource() resource.Resource {
@@ -110,15 +112,15 @@ func (r *escalationPolicyResource) Configure(_ context.Context, req resource.Con
 	if req.ProviderData == nil {
 		return
 	}
-	c, ok := req.ProviderData.(*client.Client)
+	sdk, ok := req.ProviderData.(*syschecks.Client)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Resource Configure Type",
-			fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData),
+			fmt.Sprintf("Expected *syschecks.Client, got: %T", req.ProviderData),
 		)
 		return
 	}
-	r.client = c
+	r.sdk = sdk
 }
 
 func (r *escalationPolicyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -128,14 +130,10 @@ func (r *escalationPolicyResource) Create(ctx context.Context, req resource.Crea
 		return
 	}
 
-	orgID := int(plan.OrganizationID.ValueInt64())
-	createReq := client.EscalationPolicyCreateRequest{
-		Name:     plan.Name.ValueString(),
-		IsActive: plan.IsActive.ValueBool(),
-		Steps:    stepsFromModel(plan.Steps),
-	}
-
-	policy, err := r.client.CreateEscalationPolicy(ctx, orgID, createReq)
+	policy, err := r.sdk.Oncall.CreatePolicy(ctx, int(plan.OrganizationID.ValueInt64()), models.CreatePolicyJSONRequestBody{
+		Name:  plan.Name.ValueString(),
+		Steps: stepsToSDK(plan.Steps),
+	})
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating escalation policy", err.Error())
 		return
@@ -152,12 +150,9 @@ func (r *escalationPolicyResource) Read(ctx context.Context, req resource.ReadRe
 		return
 	}
 
-	orgID := int(state.OrganizationID.ValueInt64())
-	policyID := int(state.ID.ValueInt64())
-
-	policy, err := r.client.GetEscalationPolicy(ctx, orgID, policyID)
+	policy, err := r.sdk.Oncall.GetPolicy(ctx, int(state.OrganizationID.ValueInt64()), int(state.ID.ValueInt64()))
 	if err != nil {
-		if apiErr, ok := err.(*client.APIError); ok && apiErr.IsNotFound() {
+		if sdkutil.IsNotFound(err) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -176,18 +171,13 @@ func (r *escalationPolicyResource) Update(ctx context.Context, req resource.Upda
 		return
 	}
 
-	orgID := int(plan.OrganizationID.ValueInt64())
-	policyID := int(plan.ID.ValueInt64())
-
 	name := plan.Name.ValueString()
 	isActive := plan.IsActive.ValueBool()
-	updateReq := client.EscalationPolicyUpdateRequest{
+	policy, err := r.sdk.Oncall.UpdatePolicy(ctx, int(plan.OrganizationID.ValueInt64()), int(plan.ID.ValueInt64()), models.UpdatePolicyJSONRequestBody{
 		Name:     &name,
 		IsActive: &isActive,
-		Steps:    stepsFromModel(plan.Steps),
-	}
-
-	policy, err := r.client.UpdateEscalationPolicy(ctx, orgID, policyID, updateReq)
+		Steps:    stepsToSDK(plan.Steps),
+	})
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating escalation policy", err.Error())
 		return
@@ -203,13 +193,8 @@ func (r *escalationPolicyResource) Delete(ctx context.Context, req resource.Dele
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	orgID := int(state.OrganizationID.ValueInt64())
-	policyID := int(state.ID.ValueInt64())
-
-	err := r.client.DeleteEscalationPolicy(ctx, orgID, policyID)
-	if err != nil {
-		if apiErr, ok := err.(*client.APIError); ok && apiErr.IsNotFound() {
+	if _, err := r.sdk.Oncall.DeletePolicy(ctx, int(state.OrganizationID.ValueInt64()), int(state.ID.ValueInt64())); err != nil {
+		if sdkutil.IsNotFound(err) {
 			return
 		}
 		resp.Diagnostics.AddError("Error deleting escalation policy", err.Error())
@@ -219,91 +204,59 @@ func (r *escalationPolicyResource) Delete(ctx context.Context, req resource.Dele
 func (r *escalationPolicyResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	parts := strings.SplitN(req.ID, ":", 2)
 	if len(parts) != 2 {
-		resp.Diagnostics.AddError(
-			"Invalid import ID",
-			"Expected import ID format: org_id:policy_id",
-		)
+		resp.Diagnostics.AddError("Invalid import ID", "Expected import ID format: org_id:policy_id")
 		return
 	}
-
 	orgID, err := strconv.ParseInt(parts[0], 10, 64)
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Invalid org_id in import ID",
-			fmt.Sprintf("Could not parse org_id '%s': %s", parts[0], err),
-		)
+		resp.Diagnostics.AddError("Invalid org_id in import ID", err.Error())
 		return
 	}
-
 	policyID, err := strconv.ParseInt(parts[1], 10, 64)
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Invalid policy_id in import ID",
-			fmt.Sprintf("Could not parse policy_id '%s': %s", parts[1], err),
-		)
+		resp.Diagnostics.AddError("Invalid policy_id in import ID", err.Error())
 		return
 	}
-
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("organization_id"), orgID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), policyID)...)
 }
 
-func stepsFromModel(steps []EscalationStepModel) []client.EscalationStep {
-	if steps == nil {
+func stepsToSDK(steps []EscalationStepModel) *[]models.EscalationStepSchema {
+	if len(steps) == 0 {
 		return nil
 	}
-	result := make([]client.EscalationStep, len(steps))
+	out := make([]models.EscalationStepSchema, len(steps))
 	for i, s := range steps {
-		step := client.EscalationStep{
-			StepOrder:    int(s.StepOrder.ValueInt64()),
-			DelayMinutes: int(s.DelayMinutes.ValueInt64()),
-			TargetType:   s.TargetType.ValueString(),
+		so := int(s.StepOrder.ValueInt64())
+		dm := int(s.DelayMinutes.ValueInt64())
+		out[i] = models.EscalationStepSchema{
+			StepOrder:        &so,
+			DelayMinutes:     &dm,
+			TargetType:       s.TargetType.ValueString(),
+			TargetUserId:     sdkutil.IntPtr(s.TargetUserID),
+			TargetScheduleId: sdkutil.IntPtr(s.TargetScheduleID),
+			TargetChannelId:  sdkutil.IntPtr(s.TargetChannelID),
 		}
-		if !s.TargetUserID.IsNull() && !s.TargetUserID.IsUnknown() {
-			v := int(s.TargetUserID.ValueInt64())
-			step.TargetUserID = &v
-		}
-		if !s.TargetScheduleID.IsNull() && !s.TargetScheduleID.IsUnknown() {
-			v := int(s.TargetScheduleID.ValueInt64())
-			step.TargetScheduleID = &v
-		}
-		if !s.TargetChannelID.IsNull() && !s.TargetChannelID.IsUnknown() {
-			v := int(s.TargetChannelID.ValueInt64())
-			step.TargetChannelID = &v
-		}
-		result[i] = step
 	}
-	return result
+	return &out
 }
 
-func mapPolicyToState(policy *client.EscalationPolicy, state *EscalationPolicyModel) {
-	state.ID = types.Int64Value(int64(policy.ID))
+func mapPolicyToState(policy *models.EscalationPolicyResponse, state *EscalationPolicyModel) {
+	state.ID = types.Int64Value(int64(policy.Id))
 	state.Name = types.StringValue(policy.Name)
-	state.OrganizationID = types.Int64Value(int64(policy.OrganizationID))
+	state.OrganizationID = types.Int64Value(int64(policy.OrganizationId))
 	state.IsActive = types.BoolValue(policy.IsActive)
 
-	if len(policy.Steps) > 0 {
-		steps := make([]EscalationStepModel, len(policy.Steps))
-		for i, s := range policy.Steps {
+	if policy.Steps != nil && len(*policy.Steps) > 0 {
+		steps := make([]EscalationStepModel, len(*policy.Steps))
+		for i, s := range *policy.Steps {
 			steps[i] = EscalationStepModel{
-				StepOrder:    types.Int64Value(int64(s.StepOrder)),
-				DelayMinutes: types.Int64Value(int64(s.DelayMinutes)),
-				TargetType:   types.StringValue(s.TargetType),
-			}
-			if s.TargetUserID != nil {
-				steps[i].TargetUserID = types.Int64Value(int64(*s.TargetUserID))
-			} else {
-				steps[i].TargetUserID = types.Int64Null()
-			}
-			if s.TargetScheduleID != nil {
-				steps[i].TargetScheduleID = types.Int64Value(int64(*s.TargetScheduleID))
-			} else {
-				steps[i].TargetScheduleID = types.Int64Null()
-			}
-			if s.TargetChannelID != nil {
-				steps[i].TargetChannelID = types.Int64Value(int64(*s.TargetChannelID))
-			} else {
-				steps[i].TargetChannelID = types.Int64Null()
+				StepOrder:        types.Int64Value(int64(s.StepOrder)),
+				DelayMinutes:     types.Int64Value(int64(s.DelayMinutes)),
+				TargetType:       types.StringValue(s.TargetType),
+				TargetUserID:     sdkutil.Int(s.TargetUserId),
+				TargetScheduleID: sdkutil.Int(s.TargetScheduleId),
+				TargetChannelID:  sdkutil.Int(s.TargetChannelId),
 			}
 		}
 		state.Steps = steps

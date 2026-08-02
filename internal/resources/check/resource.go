@@ -20,7 +20,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/systeampl/terraform-provider-systeam/internal/client"
+	syschecks "github.com/systeampl/syschecks-go"
+	"github.com/systeampl/syschecks-go/models"
+	"github.com/systeampl/terraform-provider-systeam/internal/sdkutil"
 )
 
 var (
@@ -30,7 +32,7 @@ var (
 )
 
 type checkResource struct {
-	client *client.Client
+	sdk *syschecks.Client
 }
 
 func NewResource() resource.Resource {
@@ -393,15 +395,15 @@ func (r *checkResource) Configure(_ context.Context, req resource.ConfigureReque
 	if req.ProviderData == nil {
 		return
 	}
-	c, ok := req.ProviderData.(*client.Client)
+	sdk, ok := req.ProviderData.(*syschecks.Client)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Resource Configure Type",
-			fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData),
+			fmt.Sprintf("Expected *syschecks.Client, got: %T", req.ProviderData),
 		)
 		return
 	}
-	r.client = c
+	r.sdk = sdk
 }
 
 func (r *checkResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -411,121 +413,128 @@ func (r *checkResource) Create(ctx context.Context, req resource.CreateRequest, 
 		return
 	}
 
-	createReq := client.CheckCreateRequest{
+	// NOTE: models.CheckCreate has NO escalation_policy_id field (unlike CheckUpdate /
+	// CheckResponse), so it cannot be set at create time via the SDK. It is still
+	// mapped on Update and Read.
+	createReq := models.CheckCreate{
 		Name:                       plan.Name.ValueString(),
-		Type:                       plan.Type.ValueString(),
-		Description:                plan.Description.ValueString(),
-		IsActive:                   plan.IsActive.ValueBool(),
-		ProjectID:                  int(plan.ProjectID.ValueInt64()),
-		Interval:                   int(plan.Interval.ValueInt64()),
-		GracePeriod:                int(plan.GracePeriod.ValueInt64()),
-		Timeout:                    int(plan.Timeout.ValueInt64()),
-		URL:                        plan.URL.ValueString(),
-		Host:                       plan.Host.ValueString(),
-		Port:                       int(plan.Port.ValueInt64()),
-		PingCount:                  int(plan.PingCount.ValueInt64()),
-		SSLVerify:                  plan.SSLVerify.ValueBool(),
-		AlertAfterFailures:         int(plan.AlertAfterFailures.ValueInt64()),
-		GeoMonitoringEnabled:       plan.GeoMonitoringEnabled.ValueBool(),
-		TracerouteOnTimeout:        plan.TracerouteOnTimeout.ValueBool(),
-		DNSServer:                  plan.DNSServer.ValueString(),
-		DNSRecordType:              plan.DNSRecordType.ValueString(),
-		DNSExpectedValue:           plan.DNSExpectedValue.ValueString(),
-		HTTPMethod:                 plan.HTTPMethod.ValueString(),
-		AuthMethod:                 plan.AuthMethod.ValueString(),
-		ScheduleType:               plan.ScheduleType.ValueString(),
-		CronExpression:             plan.CronExpression.ValueString(),
-		CronTimezone:               plan.CronTimezone.ValueString(),
-		MailDomain:                 plan.MailDomain.ValueString(),
-		RunbookURL:                 plan.RunbookURL.ValueString(),
-		DBType:                     plan.DBType.ValueString(),
-		DBHost:                     plan.DBHost.ValueString(),
-		DBPort:                     int(plan.DBPort.ValueInt64()),
-		DBName:                     plan.DBName.ValueString(),
-		DBUsername:                 plan.DBUsername.ValueString(),
-		DBPassword:                 plan.DBPassword.ValueString(),
-		DBSSLEnabled:               plan.DBSSLEnabled.ValueBool(),
-		DBQuery:                    plan.DBQuery.ValueString(),
-		DBExpectedResult:           plan.DBExpectedResult.ValueString(),
-		AuthUsername:               plan.AuthUsername.ValueString(),
-		AuthPassword:               plan.AuthPassword.ValueString(),
-		AuthBearerToken:            plan.AuthBearerToken.ValueString(),
-		HTTPBody:                   plan.HTTPBody.ValueString(),
-		HTTPBodyType:               plan.HTTPBodyType.ValueString(),
-		HTTPFollowRedirects:        plan.HTTPFollowRedirects.ValueBool(),
-		ContentMatchEnabled:        plan.ContentMatchEnabled.ValueBool(),
-		ContentMatchText:           plan.ContentMatchText.ValueString(),
-		ContentMatchType:           plan.ContentMatchType.ValueString(),
-		ContentMatchCaseSensitive:  plan.ContentMatchCaseSensitive.ValueBool(),
-		HTTPFormLoginEnabled:       plan.HTTPFormLoginEnabled.ValueBool(),
-		HTTPFormLoginURL:           plan.HTTPFormLoginURL.ValueString(),
-		HTTPFormLoginSuccessText:   plan.HTTPFormLoginSuccessText.ValueString(),
-		HTTPFormCheckAfterLoginURL: plan.HTTPFormCheckAfterLoginURL.ValueString(),
-		FTPUsername:                plan.FTPUsername.ValueString(),
-		FTPPassword:                plan.FTPPassword.ValueString(),
-		FTPProtocol:                plan.FTPProtocol.ValueString(),
-		FTPPath:                    plan.FTPPath.ValueString(),
-		FTPPassive:                 plan.FTPPassive.ValueBool(),
-		DNSSOAAlertOnChange:        plan.DNSSOAAlertOnChange.ValueBool(),
-		DNSHijackAlertEnabled:      plan.DNSHijackAlertEnabled.ValueBool(),
-		DNSHijackAlertChannelIDs:   plan.DNSHijackAlertChannelIDs.ValueString(),
-		DNSTXTMonitoringEnabled:    plan.DNSTXTMonitoringEnabled.ValueBool(),
-		DNSDKIMSelector:            plan.DNSDKIMSelector.ValueString(),
-		DNSMultiRecordEnabled:      plan.DNSMultiRecordEnabled.ValueBool(),
-		MailSMTPEnabled:            plan.MailSMTPEnabled.ValueBool(),
-		MailSMTPPort:               int(plan.MailSMTPPort.ValueInt64()),
-		MailSMTPStartTLS:           plan.MailSMTPStartTLS.ValueBool(),
-		MailSMTPOpenRelay:          plan.MailSMTPOpenRelay.ValueBool(),
-		MailIMAPEnabled:            plan.MailIMAPEnabled.ValueBool(),
-		MailIMAPPort:               int(plan.MailIMAPPort.ValueInt64()),
-		MailIMAPSSL:                plan.MailIMAPSSL.ValueBool(),
-		MailPOP3Enabled:            plan.MailPOP3Enabled.ValueBool(),
-		MailPOP3Port:               int(plan.MailPOP3Port.ValueInt64()),
-		MailPOP3SSL:                plan.MailPOP3SSL.ValueBool(),
-		MailCheckSPF:               plan.MailCheckSPF.ValueBool(),
-		MailCheckDKIM:              plan.MailCheckDKIM.ValueBool(),
-		MailDKIMSelectors:          plan.MailDKIMSelectors.ValueString(),
-		MailCheckDMARC:             plan.MailCheckDMARC.ValueBool(),
-		MailCheckPTR:               plan.MailCheckPTR.ValueBool(),
-		MailCheckBlacklist:         plan.MailCheckBlacklist.ValueBool(),
-		MailBlacklistServers:       plan.MailBlacklistServers.ValueString(),
+		Type:                       strPtr(plan.Type.ValueString()),
+		Description:                strPtr(plan.Description.ValueString()),
+		IsActive:                   boolPtr(plan.IsActive.ValueBool()),
+		ProjectId:                  int(plan.ProjectID.ValueInt64()),
+		Interval:                   intPtr(int(plan.Interval.ValueInt64())),
+		GracePeriod:                intPtr(int(plan.GracePeriod.ValueInt64())),
+		Timeout:                    intPtr(int(plan.Timeout.ValueInt64())),
+		Url:                        strPtr(plan.URL.ValueString()),
+		Host:                       strPtr(plan.Host.ValueString()),
+		Port:                       intPtr(int(plan.Port.ValueInt64())),
+		PingCount:                  intPtr(int(plan.PingCount.ValueInt64())),
+		SslVerify:                  boolPtr(plan.SSLVerify.ValueBool()),
+		AlertAfterFailures:         intPtr(int(plan.AlertAfterFailures.ValueInt64())),
+		GeoMonitoringEnabled:       boolPtr(plan.GeoMonitoringEnabled.ValueBool()),
+		TracerouteOnTimeout:        boolPtr(plan.TracerouteOnTimeout.ValueBool()),
+		DnsServer:                  strPtr(plan.DNSServer.ValueString()),
+		DnsRecordType:              strPtr(plan.DNSRecordType.ValueString()),
+		DnsExpectedValue:           strPtr(plan.DNSExpectedValue.ValueString()),
+		HttpMethod:                 strPtr(plan.HTTPMethod.ValueString()),
+		AuthMethod:                 authMethodPtr(plan.AuthMethod.ValueString()),
+		ScheduleType:               scheduleTypePtr(plan.ScheduleType.ValueString()),
+		CronExpression:             strPtr(plan.CronExpression.ValueString()),
+		CronTimezone:               strPtr(plan.CronTimezone.ValueString()),
+		MailDomain:                 strPtr(plan.MailDomain.ValueString()),
+		RunbookUrl:                 strPtr(plan.RunbookURL.ValueString()),
+		DbType:                     strPtr(plan.DBType.ValueString()),
+		DbHost:                     strPtr(plan.DBHost.ValueString()),
+		DbPort:                     intPtr(int(plan.DBPort.ValueInt64())),
+		DbName:                     strPtr(plan.DBName.ValueString()),
+		DbUsername:                 strPtr(plan.DBUsername.ValueString()),
+		DbPassword:                 strPtr(plan.DBPassword.ValueString()),
+		DbSslEnabled:               boolPtr(plan.DBSSLEnabled.ValueBool()),
+		DbQuery:                    strPtr(plan.DBQuery.ValueString()),
+		DbExpectedResult:           strPtr(plan.DBExpectedResult.ValueString()),
+		AuthUsername:               strPtr(plan.AuthUsername.ValueString()),
+		AuthPassword:               strPtr(plan.AuthPassword.ValueString()),
+		AuthBearerToken:            strPtr(plan.AuthBearerToken.ValueString()),
+		HttpBody:                   strPtr(plan.HTTPBody.ValueString()),
+		HttpBodyType:               strPtr(plan.HTTPBodyType.ValueString()),
+		HttpFollowRedirects:        boolPtr(plan.HTTPFollowRedirects.ValueBool()),
+		ContentMatchEnabled:        boolPtr(plan.ContentMatchEnabled.ValueBool()),
+		ContentMatchText:           strPtr(plan.ContentMatchText.ValueString()),
+		ContentMatchType:           strPtr(plan.ContentMatchType.ValueString()),
+		ContentMatchCaseSensitive:  boolPtr(plan.ContentMatchCaseSensitive.ValueBool()),
+		HttpFormLoginEnabled:       boolPtr(plan.HTTPFormLoginEnabled.ValueBool()),
+		HttpFormLoginUrl:           strPtr(plan.HTTPFormLoginURL.ValueString()),
+		HttpFormLoginSuccessText:   strPtr(plan.HTTPFormLoginSuccessText.ValueString()),
+		HttpFormCheckAfterLoginUrl: strPtr(plan.HTTPFormCheckAfterLoginURL.ValueString()),
+		FtpUsername:                strPtr(plan.FTPUsername.ValueString()),
+		FtpPassword:                strPtr(plan.FTPPassword.ValueString()),
+		FtpProtocol:                strPtr(plan.FTPProtocol.ValueString()),
+		FtpPath:                    strPtr(plan.FTPPath.ValueString()),
+		FtpPassive:                 boolPtr(plan.FTPPassive.ValueBool()),
+		DnsSoaAlertOnChange:        boolPtr(plan.DNSSOAAlertOnChange.ValueBool()),
+		DnsHijackAlertEnabled:      boolPtr(plan.DNSHijackAlertEnabled.ValueBool()),
+		DnsHijackAlertChannelIds:   strPtr(plan.DNSHijackAlertChannelIDs.ValueString()),
+		DnsTxtMonitoringEnabled:    boolPtr(plan.DNSTXTMonitoringEnabled.ValueBool()),
+		DnsDkimSelector:            strPtr(plan.DNSDKIMSelector.ValueString()),
+		DnsMultiRecordEnabled:      boolPtr(plan.DNSMultiRecordEnabled.ValueBool()),
+		MailSmtpEnabled:            boolPtr(plan.MailSMTPEnabled.ValueBool()),
+		MailSmtpPort:               intPtr(int(plan.MailSMTPPort.ValueInt64())),
+		MailSmtpStarttls:           boolPtr(plan.MailSMTPStartTLS.ValueBool()),
+		MailSmtpOpenRelay:          boolPtr(plan.MailSMTPOpenRelay.ValueBool()),
+		MailImapEnabled:            boolPtr(plan.MailIMAPEnabled.ValueBool()),
+		MailImapPort:               intPtr(int(plan.MailIMAPPort.ValueInt64())),
+		MailImapSsl:                boolPtr(plan.MailIMAPSSL.ValueBool()),
+		MailPop3Enabled:            boolPtr(plan.MailPOP3Enabled.ValueBool()),
+		MailPop3Port:               intPtr(int(plan.MailPOP3Port.ValueInt64())),
+		MailPop3Ssl:                boolPtr(plan.MailPOP3SSL.ValueBool()),
+		MailCheckSpf:               boolPtr(plan.MailCheckSPF.ValueBool()),
+		MailCheckDkim:              boolPtr(plan.MailCheckDKIM.ValueBool()),
+		MailDkimSelectors:          strPtr(plan.MailDKIMSelectors.ValueString()),
+		MailCheckDmarc:             boolPtr(plan.MailCheckDMARC.ValueBool()),
+		MailCheckPtr:               boolPtr(plan.MailCheckPTR.ValueBool()),
+		MailCheckBlacklist:         boolPtr(plan.MailCheckBlacklist.ValueBool()),
+		MailBlacklistServers:       strPtr(plan.MailBlacklistServers.ValueString()),
 	}
 
-	if !plan.AssignedAgentID.IsNull() && !plan.AssignedAgentID.IsUnknown() {
-		v := int(plan.AssignedAgentID.ValueInt64())
-		createReq.AssignedAgentID = &v
-	}
-	if !plan.EscalationPolicyID.IsNull() && !plan.EscalationPolicyID.IsUnknown() {
-		v := int(plan.EscalationPolicyID.ValueInt64())
-		createReq.EscalationPolicyID = &v
-	}
+	createReq.AssignedAgentId = sdkutil.IntPtr(plan.AssignedAgentID)
 
 	statusCodes, d := listToInts(ctx, plan.ExpectedStatusCodes)
 	resp.Diagnostics.Append(d...)
-	createReq.ExpectedStatusCodes = statusCodes
+	if statusCodes != nil {
+		createReq.ExpectedStatusCodes = &statusCodes
+	}
 	ips, d := listToStrs(ctx, plan.DNSExpectedIPs)
 	resp.Diagnostics.Append(d...)
-	createReq.DNSExpectedIPs = ips
+	if ips != nil {
+		createReq.DnsExpectedIps = &ips
+	}
 	agentIDs, d := listToInts(ctx, plan.AssignedAgentIDs)
 	resp.Diagnostics.Append(d...)
-	createReq.AssignedAgentIDs = agentIDs
-	if !plan.HTTPHeaders.IsNull() && !plan.HTTPHeaders.IsUnknown() {
-		createReq.HTTPHeaders = json.RawMessage(plan.HTTPHeaders.ValueString())
+	if agentIDs != nil {
+		createReq.AssignedAgentIds = &agentIDs
 	}
-	if !plan.HTTPFormLoginData.IsNull() && !plan.HTTPFormLoginData.IsUnknown() {
-		createReq.HTTPFormLoginData = json.RawMessage(plan.HTTPFormLoginData.ValueString())
-	}
-	createReq.APIScenarioSteps = normToRaw(plan.APIScenarioSteps)
-	createReq.APIScenarioSecrets = normToRaw(plan.APIScenarioSecrets)
-	createReq.OIDCConfig = normToRaw(plan.OIDCConfig)
-	createReq.DNSRecordsConfig = normToRaw(plan.DNSRecordsConfig)
-	createReq.CheckSourceCritical = normToRaw(plan.CheckSourceCritical)
-	createReq.ResponseAssertions = normToRaw(plan.ResponseAssertions)
+
+	createReq.HttpHeaders, d = normToMap(plan.HTTPHeaders)
+	resp.Diagnostics.Append(d...)
+	createReq.HttpFormLoginData, d = normToMap(plan.HTTPFormLoginData)
+	resp.Diagnostics.Append(d...)
+	createReq.ApiScenarioSteps, d = normToMap(plan.APIScenarioSteps)
+	resp.Diagnostics.Append(d...)
+	createReq.ApiScenarioSecrets, d = normToMap(plan.APIScenarioSecrets)
+	resp.Diagnostics.Append(d...)
+	createReq.OidcConfig, d = normToMap(plan.OIDCConfig)
+	resp.Diagnostics.Append(d...)
+	createReq.DnsRecordsConfig, d = normToMap(plan.DNSRecordsConfig)
+	resp.Diagnostics.Append(d...)
+	createReq.CheckSourceCritical, d = normToMap(plan.CheckSourceCritical)
+	resp.Diagnostics.Append(d...)
+	createReq.ResponseAssertions, d = normToSlice(plan.ResponseAssertions)
+	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	check, err := r.client.CreateCheck(ctx, createReq)
+	check, err := r.sdk.Checks.CreateNewCheck(ctx, createReq)
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating check", err.Error())
 		return
@@ -542,9 +551,9 @@ func (r *checkResource) Read(ctx context.Context, req resource.ReadRequest, resp
 		return
 	}
 
-	check, err := r.client.GetCheck(ctx, int(state.ID.ValueInt64()))
+	check, err := r.sdk.Checks.GetCheckDetails(ctx, int(state.ID.ValueInt64()))
 	if err != nil {
-		if apiErr, ok := err.(*client.APIError); ok && apiErr.IsNotFound() {
+		if sdkutil.IsNotFound(err) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -567,109 +576,76 @@ func (r *checkResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		return
 	}
 
-	name := plan.Name.ValueString()
-	desc := plan.Description.ValueString()
-	isActive := plan.IsActive.ValueBool()
-	interval := int(plan.Interval.ValueInt64())
-	gracePeriod := int(plan.GracePeriod.ValueInt64())
-	timeout := int(plan.Timeout.ValueInt64())
-	url := plan.URL.ValueString()
-	host := plan.Host.ValueString()
-	port := int(plan.Port.ValueInt64())
-	pingCount := int(plan.PingCount.ValueInt64())
-	sslVerify := plan.SSLVerify.ValueBool()
-	alertAfter := int(plan.AlertAfterFailures.ValueInt64())
-	geoEnabled := plan.GeoMonitoringEnabled.ValueBool()
-	traceroute := plan.TracerouteOnTimeout.ValueBool()
-	dnsServer := plan.DNSServer.ValueString()
-	dnsRecordType := plan.DNSRecordType.ValueString()
-	dnsExpected := plan.DNSExpectedValue.ValueString()
-	httpMethod := plan.HTTPMethod.ValueString()
-	authMethod := plan.AuthMethod.ValueString()
-	scheduleType := plan.ScheduleType.ValueString()
-	cronExpr := plan.CronExpression.ValueString()
-	cronTz := plan.CronTimezone.ValueString()
-	mailDomain := plan.MailDomain.ValueString()
-	runbookURL := plan.RunbookURL.ValueString()
-	dbType := plan.DBType.ValueString()
-	dbHost := plan.DBHost.ValueString()
-	dbPort := int(plan.DBPort.ValueInt64())
-	dbName := plan.DBName.ValueString()
-	dbUsername := plan.DBUsername.ValueString()
-	dbSSLEnabled := plan.DBSSLEnabled.ValueBool()
-	dbQuery := plan.DBQuery.ValueString()
-	dbExpectedResult := plan.DBExpectedResult.ValueString()
-
-	updateReq := client.CheckUpdateRequest{
-		Name:                       &name,
-		Description:                &desc,
-		IsActive:                   &isActive,
-		Interval:                   &interval,
-		GracePeriod:                &gracePeriod,
-		Timeout:                    &timeout,
-		URL:                        &url,
-		Host:                       &host,
-		Port:                       &port,
-		PingCount:                  &pingCount,
-		SSLVerify:                  &sslVerify,
-		AlertAfterFailures:         &alertAfter,
-		GeoMonitoringEnabled:       &geoEnabled,
-		TracerouteOnTimeout:        &traceroute,
-		DNSServer:                  &dnsServer,
-		DNSRecordType:              &dnsRecordType,
-		DNSExpectedValue:           &dnsExpected,
-		HTTPMethod:                 &httpMethod,
-		AuthMethod:                 &authMethod,
-		ScheduleType:               &scheduleType,
-		CronExpression:             &cronExpr,
-		CronTimezone:               &cronTz,
-		MailDomain:                 &mailDomain,
-		RunbookURL:                 &runbookURL,
-		DBType:                     &dbType,
-		DBHost:                     &dbHost,
-		DBPort:                     &dbPort,
-		DBName:                     &dbName,
-		DBUsername:                 &dbUsername,
-		DBSSLEnabled:               &dbSSLEnabled,
-		DBQuery:                    &dbQuery,
-		DBExpectedResult:           &dbExpectedResult,
+	updateReq := models.CheckUpdate{
+		Name:                       strPtr(plan.Name.ValueString()),
+		Description:                strPtr(plan.Description.ValueString()),
+		IsActive:                   boolPtr(plan.IsActive.ValueBool()),
+		Interval:                   intPtr(int(plan.Interval.ValueInt64())),
+		GracePeriod:                intPtr(int(plan.GracePeriod.ValueInt64())),
+		Timeout:                    intPtr(int(plan.Timeout.ValueInt64())),
+		Url:                        strPtr(plan.URL.ValueString()),
+		Host:                       strPtr(plan.Host.ValueString()),
+		Port:                       intPtr(int(plan.Port.ValueInt64())),
+		PingCount:                  intPtr(int(plan.PingCount.ValueInt64())),
+		SslVerify:                  boolPtr(plan.SSLVerify.ValueBool()),
+		AlertAfterFailures:         intPtr(int(plan.AlertAfterFailures.ValueInt64())),
+		GeoMonitoringEnabled:       boolPtr(plan.GeoMonitoringEnabled.ValueBool()),
+		TracerouteOnTimeout:        boolPtr(plan.TracerouteOnTimeout.ValueBool()),
+		DnsServer:                  strPtr(plan.DNSServer.ValueString()),
+		DnsRecordType:              strPtr(plan.DNSRecordType.ValueString()),
+		DnsExpectedValue:           strPtr(plan.DNSExpectedValue.ValueString()),
+		HttpMethod:                 strPtr(plan.HTTPMethod.ValueString()),
+		AuthMethod:                 authMethodPtr(plan.AuthMethod.ValueString()),
+		ScheduleType:               scheduleTypePtr(plan.ScheduleType.ValueString()),
+		CronExpression:             strPtr(plan.CronExpression.ValueString()),
+		CronTimezone:               strPtr(plan.CronTimezone.ValueString()),
+		MailDomain:                 strPtr(plan.MailDomain.ValueString()),
+		RunbookUrl:                 strPtr(plan.RunbookURL.ValueString()),
+		DbType:                     strPtr(plan.DBType.ValueString()),
+		DbHost:                     strPtr(plan.DBHost.ValueString()),
+		DbPort:                     intPtr(int(plan.DBPort.ValueInt64())),
+		DbName:                     strPtr(plan.DBName.ValueString()),
+		DbUsername:                 strPtr(plan.DBUsername.ValueString()),
+		DbSslEnabled:               boolPtr(plan.DBSSLEnabled.ValueBool()),
+		DbQuery:                    strPtr(plan.DBQuery.ValueString()),
+		DbExpectedResult:           strPtr(plan.DBExpectedResult.ValueString()),
 		AuthUsername:               strPtr(plan.AuthUsername.ValueString()),
-		HTTPBody:                   strPtr(plan.HTTPBody.ValueString()),
-		HTTPBodyType:               strPtr(plan.HTTPBodyType.ValueString()),
-		HTTPFollowRedirects:        boolPtr(plan.HTTPFollowRedirects.ValueBool()),
+		HttpBody:                   strPtr(plan.HTTPBody.ValueString()),
+		HttpBodyType:               strPtr(plan.HTTPBodyType.ValueString()),
+		HttpFollowRedirects:        boolPtr(plan.HTTPFollowRedirects.ValueBool()),
 		ContentMatchEnabled:        boolPtr(plan.ContentMatchEnabled.ValueBool()),
 		ContentMatchText:           strPtr(plan.ContentMatchText.ValueString()),
 		ContentMatchType:           strPtr(plan.ContentMatchType.ValueString()),
 		ContentMatchCaseSensitive:  boolPtr(plan.ContentMatchCaseSensitive.ValueBool()),
-		HTTPFormLoginEnabled:       boolPtr(plan.HTTPFormLoginEnabled.ValueBool()),
-		HTTPFormLoginURL:           strPtr(plan.HTTPFormLoginURL.ValueString()),
-		HTTPFormLoginSuccessText:   strPtr(plan.HTTPFormLoginSuccessText.ValueString()),
-		HTTPFormCheckAfterLoginURL: strPtr(plan.HTTPFormCheckAfterLoginURL.ValueString()),
-		FTPUsername:                strPtr(plan.FTPUsername.ValueString()),
-		FTPProtocol:                strPtr(plan.FTPProtocol.ValueString()),
-		FTPPath:                    strPtr(plan.FTPPath.ValueString()),
-		FTPPassive:                 boolPtr(plan.FTPPassive.ValueBool()),
-		DNSSOAAlertOnChange:        boolPtr(plan.DNSSOAAlertOnChange.ValueBool()),
-		DNSHijackAlertEnabled:      boolPtr(plan.DNSHijackAlertEnabled.ValueBool()),
-		DNSHijackAlertChannelIDs:   strPtr(plan.DNSHijackAlertChannelIDs.ValueString()),
-		DNSTXTMonitoringEnabled:    boolPtr(plan.DNSTXTMonitoringEnabled.ValueBool()),
-		DNSDKIMSelector:            strPtr(plan.DNSDKIMSelector.ValueString()),
-		DNSMultiRecordEnabled:      boolPtr(plan.DNSMultiRecordEnabled.ValueBool()),
-		MailSMTPEnabled:            boolPtr(plan.MailSMTPEnabled.ValueBool()),
-		MailSMTPPort:               intPtr(int(plan.MailSMTPPort.ValueInt64())),
-		MailSMTPStartTLS:           boolPtr(plan.MailSMTPStartTLS.ValueBool()),
-		MailSMTPOpenRelay:          boolPtr(plan.MailSMTPOpenRelay.ValueBool()),
-		MailIMAPEnabled:            boolPtr(plan.MailIMAPEnabled.ValueBool()),
-		MailIMAPPort:               intPtr(int(plan.MailIMAPPort.ValueInt64())),
-		MailIMAPSSL:                boolPtr(plan.MailIMAPSSL.ValueBool()),
-		MailPOP3Enabled:            boolPtr(plan.MailPOP3Enabled.ValueBool()),
-		MailPOP3Port:               intPtr(int(plan.MailPOP3Port.ValueInt64())),
-		MailPOP3SSL:                boolPtr(plan.MailPOP3SSL.ValueBool()),
-		MailCheckSPF:               boolPtr(plan.MailCheckSPF.ValueBool()),
-		MailCheckDKIM:              boolPtr(plan.MailCheckDKIM.ValueBool()),
-		MailDKIMSelectors:          strPtr(plan.MailDKIMSelectors.ValueString()),
-		MailCheckDMARC:             boolPtr(plan.MailCheckDMARC.ValueBool()),
-		MailCheckPTR:               boolPtr(plan.MailCheckPTR.ValueBool()),
+		HttpFormLoginEnabled:       boolPtr(plan.HTTPFormLoginEnabled.ValueBool()),
+		HttpFormLoginUrl:           strPtr(plan.HTTPFormLoginURL.ValueString()),
+		HttpFormLoginSuccessText:   strPtr(plan.HTTPFormLoginSuccessText.ValueString()),
+		HttpFormCheckAfterLoginUrl: strPtr(plan.HTTPFormCheckAfterLoginURL.ValueString()),
+		FtpUsername:                strPtr(plan.FTPUsername.ValueString()),
+		FtpProtocol:                strPtr(plan.FTPProtocol.ValueString()),
+		FtpPath:                    strPtr(plan.FTPPath.ValueString()),
+		FtpPassive:                 boolPtr(plan.FTPPassive.ValueBool()),
+		DnsSoaAlertOnChange:        boolPtr(plan.DNSSOAAlertOnChange.ValueBool()),
+		DnsHijackAlertEnabled:      boolPtr(plan.DNSHijackAlertEnabled.ValueBool()),
+		DnsHijackAlertChannelIds:   strPtr(plan.DNSHijackAlertChannelIDs.ValueString()),
+		DnsTxtMonitoringEnabled:    boolPtr(plan.DNSTXTMonitoringEnabled.ValueBool()),
+		DnsDkimSelector:            strPtr(plan.DNSDKIMSelector.ValueString()),
+		DnsMultiRecordEnabled:      boolPtr(plan.DNSMultiRecordEnabled.ValueBool()),
+		MailSmtpEnabled:            boolPtr(plan.MailSMTPEnabled.ValueBool()),
+		MailSmtpPort:               intPtr(int(plan.MailSMTPPort.ValueInt64())),
+		MailSmtpStarttls:           boolPtr(plan.MailSMTPStartTLS.ValueBool()),
+		MailSmtpOpenRelay:          boolPtr(plan.MailSMTPOpenRelay.ValueBool()),
+		MailImapEnabled:            boolPtr(plan.MailIMAPEnabled.ValueBool()),
+		MailImapPort:               intPtr(int(plan.MailIMAPPort.ValueInt64())),
+		MailImapSsl:                boolPtr(plan.MailIMAPSSL.ValueBool()),
+		MailPop3Enabled:            boolPtr(plan.MailPOP3Enabled.ValueBool()),
+		MailPop3Port:               intPtr(int(plan.MailPOP3Port.ValueInt64())),
+		MailPop3Ssl:                boolPtr(plan.MailPOP3SSL.ValueBool()),
+		MailCheckSpf:               boolPtr(plan.MailCheckSPF.ValueBool()),
+		MailCheckDkim:              boolPtr(plan.MailCheckDKIM.ValueBool()),
+		MailDkimSelectors:          strPtr(plan.MailDKIMSelectors.ValueString()),
+		MailCheckDmarc:             boolPtr(plan.MailCheckDMARC.ValueBool()),
+		MailCheckPtr:               boolPtr(plan.MailCheckPTR.ValueBool()),
 		MailCheckBlacklist:         boolPtr(plan.MailCheckBlacklist.ValueBool()),
 		MailBlacklistServers:       strPtr(plan.MailBlacklistServers.ValueString()),
 	}
@@ -678,17 +654,11 @@ func (r *checkResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	// was set before but removed now; leave nil (untouched) when it was never set.
 	updateReq.AuthPassword = secretUpdate(plan.AuthPassword.ValueString(), prior.AuthPassword.ValueString())
 	updateReq.AuthBearerToken = secretUpdate(plan.AuthBearerToken.ValueString(), prior.AuthBearerToken.ValueString())
-	updateReq.FTPPassword = secretUpdate(plan.FTPPassword.ValueString(), prior.FTPPassword.ValueString())
-	updateReq.DBPassword = secretUpdate(plan.DBPassword.ValueString(), prior.DBPassword.ValueString())
+	updateReq.FtpPassword = secretUpdate(plan.FTPPassword.ValueString(), prior.FTPPassword.ValueString())
+	updateReq.DbPassword = secretUpdate(plan.DBPassword.ValueString(), prior.DBPassword.ValueString())
 
-	if !plan.AssignedAgentID.IsNull() && !plan.AssignedAgentID.IsUnknown() {
-		v := int(plan.AssignedAgentID.ValueInt64())
-		updateReq.AssignedAgentID = &v
-	}
-	if !plan.EscalationPolicyID.IsNull() && !plan.EscalationPolicyID.IsUnknown() {
-		v := int(plan.EscalationPolicyID.ValueInt64())
-		updateReq.EscalationPolicyID = &v
-	}
+	updateReq.AssignedAgentId = sdkutil.IntPtr(plan.AssignedAgentID)
+	updateReq.EscalationPolicyId = sdkutil.IntPtr(plan.EscalationPolicyID)
 
 	scodes, d := listToInts(ctx, plan.ExpectedStatusCodes)
 	resp.Diagnostics.Append(d...)
@@ -698,30 +668,35 @@ func (r *checkResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	uips, d := listToStrs(ctx, plan.DNSExpectedIPs)
 	resp.Diagnostics.Append(d...)
 	if uips != nil {
-		updateReq.DNSExpectedIPs = &uips
+		updateReq.DnsExpectedIps = &uips
 	}
 	uagents, d := listToInts(ctx, plan.AssignedAgentIDs)
 	resp.Diagnostics.Append(d...)
 	if uagents != nil {
-		updateReq.AssignedAgentIDs = &uagents
+		updateReq.AssignedAgentIds = &uagents
 	}
-	if !plan.HTTPHeaders.IsNull() && !plan.HTTPHeaders.IsUnknown() {
-		updateReq.HTTPHeaders = json.RawMessage(plan.HTTPHeaders.ValueString())
-	}
-	if !plan.HTTPFormLoginData.IsNull() && !plan.HTTPFormLoginData.IsUnknown() {
-		updateReq.HTTPFormLoginData = json.RawMessage(plan.HTTPFormLoginData.ValueString())
-	}
-	updateReq.APIScenarioSteps = normToRaw(plan.APIScenarioSteps)
-	updateReq.OIDCConfig = normToRaw(plan.OIDCConfig)
-	updateReq.DNSRecordsConfig = normToRaw(plan.DNSRecordsConfig)
-	updateReq.CheckSourceCritical = normToRaw(plan.CheckSourceCritical)
-	updateReq.ResponseAssertions = normToRaw(plan.ResponseAssertions)
-	updateReq.APIScenarioSecrets = secretRawUpdate(plan.APIScenarioSecrets, prior.APIScenarioSecrets)
+
+	updateReq.HttpHeaders, d = normToMap(plan.HTTPHeaders)
+	resp.Diagnostics.Append(d...)
+	updateReq.HttpFormLoginData, d = normToMap(plan.HTTPFormLoginData)
+	resp.Diagnostics.Append(d...)
+	updateReq.ApiScenarioSteps, d = normToMap(plan.APIScenarioSteps)
+	resp.Diagnostics.Append(d...)
+	updateReq.OidcConfig, d = normToMap(plan.OIDCConfig)
+	resp.Diagnostics.Append(d...)
+	updateReq.DnsRecordsConfig, d = normToMap(plan.DNSRecordsConfig)
+	resp.Diagnostics.Append(d...)
+	updateReq.CheckSourceCritical, d = normToMap(plan.CheckSourceCritical)
+	resp.Diagnostics.Append(d...)
+	updateReq.ResponseAssertions, d = normToSlice(plan.ResponseAssertions)
+	resp.Diagnostics.Append(d...)
+	updateReq.ApiScenarioSecrets, d = secretMapUpdate(plan.APIScenarioSecrets, prior.APIScenarioSecrets)
+	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	check, err := r.client.UpdateCheck(ctx, int(plan.ID.ValueInt64()), updateReq)
+	check, err := r.sdk.Checks.UpdateCheck(ctx, int(plan.ID.ValueInt64()), updateReq)
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating check", err.Error())
 		return
@@ -738,9 +713,8 @@ func (r *checkResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 		return
 	}
 
-	err := r.client.DeleteCheck(ctx, int(state.ID.ValueInt64()))
-	if err != nil {
-		if apiErr, ok := err.(*client.APIError); ok && apiErr.IsNotFound() {
+	if _, err := r.sdk.Checks.RemoveCheck(ctx, int(state.ID.ValueInt64())); err != nil {
+		if sdkutil.IsNotFound(err) {
 			return
 		}
 		resp.Diagnostics.AddError("Error deleting check", err.Error())
@@ -756,149 +730,233 @@ func (r *checkResource) ImportState(ctx context.Context, req resource.ImportStat
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), id)...)
 }
 
-func mapCheckToState(ctx context.Context, check *client.Check, state *CheckModel) diag.Diagnostics {
+func mapCheckToState(ctx context.Context, check *models.CheckResponse, state *CheckModel) diag.Diagnostics {
 	var diags diag.Diagnostics
-	state.ID = types.Int64Value(int64(check.ID))
+	state.ID = types.Int64Value(int64(check.Id))
 	state.Name = types.StringValue(check.Name)
-	state.Type = types.StringValue(check.Type)
-	state.Description = types.StringValue(check.Description)
-	state.IsActive = types.BoolValue(check.IsActive)
-	state.ProjectID = types.Int64Value(int64(check.ProjectID))
-	state.Interval = types.Int64Value(int64(check.Interval))
-	state.GracePeriod = types.Int64Value(int64(check.GracePeriod))
-	state.Timeout = types.Int64Value(int64(check.Timeout))
-	state.URL = types.StringValue(check.URL)
-	state.Host = types.StringValue(check.Host)
-	state.Port = types.Int64Value(int64(check.Port))
-	state.PingCount = types.Int64Value(int64(check.PingCount))
-	state.SSLVerify = types.BoolValue(check.SSLVerify)
-	state.AlertAfterFailures = types.Int64Value(int64(check.AlertAfterFailures))
-	state.GeoMonitoringEnabled = types.BoolValue(check.GeoMonitoringEnabled)
-	state.TracerouteOnTimeout = types.BoolValue(check.TracerouteOnTimeout)
-	state.DNSServer = types.StringValue(check.DNSServer)
-	state.DNSRecordType = types.StringValue(check.DNSRecordType)
-	state.DNSExpectedValue = types.StringValue(check.DNSExpectedValue)
-	state.HTTPMethod = types.StringValue(check.HTTPMethod)
-	state.AuthMethod = types.StringValue(check.AuthMethod)
-	state.ScheduleType = types.StringValue(check.ScheduleType)
-	state.CronExpression = types.StringValue(check.CronExpression)
-	state.CronTimezone = types.StringValue(check.CronTimezone)
-	state.MailDomain = types.StringValue(check.MailDomain)
-	state.RunbookURL = types.StringValue(check.RunbookURL)
-	state.DBType = types.StringValue(check.DBType)
-	state.DBHost = types.StringValue(check.DBHost)
-	state.DBPort = types.Int64Value(int64(check.DBPort))
-	state.DBName = types.StringValue(check.DBName)
-	state.DBUsername = types.StringValue(check.DBUsername)
-	state.DBSSLEnabled = types.BoolValue(check.DBSSLEnabled)
-	state.DBQuery = types.StringValue(check.DBQuery)
-	state.DBExpectedResult = types.StringValue(check.DBExpectedResult)
+	state.Type = strVal(check.Type)
+	state.Description = strVal(check.Description)
+	state.IsActive = boolVal(check.IsActive)
+	state.ProjectID = intVal(check.ProjectId)
+	state.Interval = intVal(check.Interval)
+	state.GracePeriod = intVal(check.GracePeriod)
+	state.Timeout = intVal(check.Timeout)
+	state.URL = strVal(check.Url)
+	state.Host = strVal(check.Host)
+	state.Port = intVal(check.Port)
+	state.PingCount = intVal(check.PingCount)
+	state.SSLVerify = boolVal(check.SslVerify)
+	state.AlertAfterFailures = intVal(check.AlertAfterFailures)
+	state.GeoMonitoringEnabled = boolVal(check.GeoMonitoringEnabled)
+	state.TracerouteOnTimeout = boolVal(check.TracerouteOnTimeout)
+	state.DNSServer = strVal(check.DnsServer)
+	state.DNSRecordType = strVal(check.DnsRecordType)
+	state.DNSExpectedValue = strVal(check.DnsExpectedValue)
+	state.HTTPMethod = strVal(check.HttpMethod)
+	state.AuthMethod = authMethodVal(check.AuthMethod)
+	state.ScheduleType = scheduleTypeVal(check.ScheduleType)
+	state.CronExpression = strVal(check.CronExpression)
+	state.CronTimezone = strVal(check.CronTimezone)
+	state.MailDomain = strVal(check.MailDomain)
+	state.RunbookURL = strVal(check.RunbookUrl)
+	state.DBType = strVal(check.DbType)
+	state.DBHost = strVal(check.DbHost)
+	state.DBPort = intVal(check.DbPort)
+	state.DBName = strVal(check.DbName)
+	state.DBUsername = strVal(check.DbUsername)
+	state.DBSSLEnabled = boolVal(check.DbSslEnabled)
+	state.DBQuery = strVal(check.DbQuery)
+	state.DBExpectedResult = strVal(check.DbExpectedResult)
 	// Secrets (db_password, auth_password, auth_bearer_token, ftp_password) are
 	// intentionally NOT refreshed — write-only, not returned by the API; keep
 	// whatever is already in state/plan.
-	state.AuthUsername = types.StringValue(check.AuthUsername)
-	state.HTTPBody = types.StringValue(check.HTTPBody)
-	state.HTTPBodyType = types.StringValue(check.HTTPBodyType)
-	state.HTTPFollowRedirects = types.BoolValue(check.HTTPFollowRedirects)
-	state.ContentMatchEnabled = types.BoolValue(check.ContentMatchEnabled)
-	state.ContentMatchText = types.StringValue(check.ContentMatchText)
-	state.ContentMatchType = types.StringValue(check.ContentMatchType)
-	state.ContentMatchCaseSensitive = types.BoolValue(check.ContentMatchCaseSensitive)
-	state.HTTPFormLoginEnabled = types.BoolValue(check.HTTPFormLoginEnabled)
-	state.HTTPFormLoginURL = types.StringValue(check.HTTPFormLoginURL)
-	state.HTTPFormLoginSuccessText = types.StringValue(check.HTTPFormLoginSuccessText)
-	state.HTTPFormCheckAfterLoginURL = types.StringValue(check.HTTPFormCheckAfterLoginURL)
-	state.FTPUsername = types.StringValue(check.FTPUsername)
-	state.FTPProtocol = types.StringValue(check.FTPProtocol)
-	state.FTPPath = types.StringValue(check.FTPPath)
-	state.FTPPassive = types.BoolValue(check.FTPPassive)
-	state.DNSSOAAlertOnChange = types.BoolValue(check.DNSSOAAlertOnChange)
-	state.DNSHijackAlertEnabled = types.BoolValue(check.DNSHijackAlertEnabled)
-	state.DNSHijackAlertChannelIDs = types.StringValue(check.DNSHijackAlertChannelIDs)
-	state.DNSTXTMonitoringEnabled = types.BoolValue(check.DNSTXTMonitoringEnabled)
-	state.DNSDKIMSelector = types.StringValue(check.DNSDKIMSelector)
-	state.DNSMultiRecordEnabled = types.BoolValue(check.DNSMultiRecordEnabled)
-	state.MailSMTPEnabled = types.BoolValue(check.MailSMTPEnabled)
-	state.MailSMTPPort = types.Int64Value(int64(check.MailSMTPPort))
-	state.MailSMTPStartTLS = types.BoolValue(check.MailSMTPStartTLS)
-	state.MailSMTPOpenRelay = types.BoolValue(check.MailSMTPOpenRelay)
-	state.MailIMAPEnabled = types.BoolValue(check.MailIMAPEnabled)
-	state.MailIMAPPort = types.Int64Value(int64(check.MailIMAPPort))
-	state.MailIMAPSSL = types.BoolValue(check.MailIMAPSSL)
-	state.MailPOP3Enabled = types.BoolValue(check.MailPOP3Enabled)
-	state.MailPOP3Port = types.Int64Value(int64(check.MailPOP3Port))
-	state.MailPOP3SSL = types.BoolValue(check.MailPOP3SSL)
-	state.MailCheckSPF = types.BoolValue(check.MailCheckSPF)
-	state.MailCheckDKIM = types.BoolValue(check.MailCheckDKIM)
-	state.MailDKIMSelectors = types.StringValue(check.MailDKIMSelectors)
-	state.MailCheckDMARC = types.BoolValue(check.MailCheckDMARC)
-	state.MailCheckPTR = types.BoolValue(check.MailCheckPTR)
-	state.MailCheckBlacklist = types.BoolValue(check.MailCheckBlacklist)
-	state.MailBlacklistServers = types.StringValue(check.MailBlacklistServers)
+	state.AuthUsername = strVal(check.AuthUsername)
+	state.HTTPBody = strVal(check.HttpBody)
+	state.HTTPBodyType = strVal(check.HttpBodyType)
+	state.HTTPFollowRedirects = boolVal(check.HttpFollowRedirects)
+	state.ContentMatchEnabled = boolVal(check.ContentMatchEnabled)
+	state.ContentMatchText = strVal(check.ContentMatchText)
+	state.ContentMatchType = strVal(check.ContentMatchType)
+	state.ContentMatchCaseSensitive = boolVal(check.ContentMatchCaseSensitive)
+	state.HTTPFormLoginEnabled = boolVal(check.HttpFormLoginEnabled)
+	state.HTTPFormLoginURL = strVal(check.HttpFormLoginUrl)
+	state.HTTPFormLoginSuccessText = strVal(check.HttpFormLoginSuccessText)
+	state.HTTPFormCheckAfterLoginURL = strVal(check.HttpFormCheckAfterLoginUrl)
+	state.FTPUsername = strVal(check.FtpUsername)
+	state.FTPProtocol = strVal(check.FtpProtocol)
+	state.FTPPath = strVal(check.FtpPath)
+	state.FTPPassive = boolVal(check.FtpPassive)
+	state.DNSSOAAlertOnChange = boolVal(check.DnsSoaAlertOnChange)
+	state.DNSHijackAlertEnabled = boolVal(check.DnsHijackAlertEnabled)
+	state.DNSHijackAlertChannelIDs = strVal(check.DnsHijackAlertChannelIds)
+	state.DNSTXTMonitoringEnabled = boolVal(check.DnsTxtMonitoringEnabled)
+	state.DNSDKIMSelector = strVal(check.DnsDkimSelector)
+	state.DNSMultiRecordEnabled = boolVal(check.DnsMultiRecordEnabled)
+	state.MailSMTPEnabled = boolVal(check.MailSmtpEnabled)
+	state.MailSMTPPort = intVal(check.MailSmtpPort)
+	state.MailSMTPStartTLS = boolVal(check.MailSmtpStarttls)
+	state.MailSMTPOpenRelay = boolVal(check.MailSmtpOpenRelay)
+	state.MailIMAPEnabled = boolVal(check.MailImapEnabled)
+	state.MailIMAPPort = intVal(check.MailImapPort)
+	state.MailIMAPSSL = boolVal(check.MailImapSsl)
+	state.MailPOP3Enabled = boolVal(check.MailPop3Enabled)
+	state.MailPOP3Port = intVal(check.MailPop3Port)
+	state.MailPOP3SSL = boolVal(check.MailPop3Ssl)
+	state.MailCheckSPF = boolVal(check.MailCheckSpf)
+	state.MailCheckDKIM = boolVal(check.MailCheckDkim)
+	state.MailDKIMSelectors = strVal(check.MailDkimSelectors)
+	state.MailCheckDMARC = boolVal(check.MailCheckDmarc)
+	state.MailCheckPTR = boolVal(check.MailCheckPtr)
+	state.MailCheckBlacklist = boolVal(check.MailCheckBlacklist)
+	state.MailBlacklistServers = strVal(check.MailBlacklistServers)
 
-	if check.AssignedAgentID != nil {
-		state.AssignedAgentID = types.Int64Value(int64(*check.AssignedAgentID))
-	} else {
-		state.AssignedAgentID = types.Int64Null()
-	}
-	if check.EscalationPolicyID != nil {
-		state.EscalationPolicyID = types.Int64Value(int64(*check.EscalationPolicyID))
-	} else {
-		state.EscalationPolicyID = types.Int64Null()
-	}
+	state.AssignedAgentID = sdkutil.Int(check.AssignedAgentId)
+	state.EscalationPolicyID = sdkutil.Int(check.EscalationPolicyId)
 
-	escList, d := types.ListValueFrom(ctx, types.Int64Type, intsToInt64s(check.ExpectedStatusCodes))
+	escList, d := types.ListValueFrom(ctx, types.Int64Type, intsToInt64s(derefInts(check.ExpectedStatusCodes)))
 	diags.Append(d...)
 	state.ExpectedStatusCodes = escList
-	ipList, d := types.ListValueFrom(ctx, types.StringType, check.DNSExpectedIPs)
+	ipList, d := types.ListValueFrom(ctx, types.StringType, derefStrs(check.DnsExpectedIps))
 	diags.Append(d...)
 	state.DNSExpectedIPs = ipList
-	agentList, d := types.ListValueFrom(ctx, types.Int64Type, intsToInt64s(check.AssignedAgentIDs))
+	agentList, d := types.ListValueFrom(ctx, types.Int64Type, intsToInt64s(derefInts(check.AssignedAgentIds)))
 	diags.Append(d...)
 	state.AssignedAgentIDs = agentList
 
-	state.HTTPHeaders = rawToNormalized(check.HTTPHeaders)
-	state.HTTPFormLoginData = rawToNormalized(check.HTTPFormLoginData)
-	state.APIScenarioSteps = rawToNormalized(check.APIScenarioSteps)
-	state.OIDCConfig = rawToNormalized(check.OIDCConfig)
-	state.DNSRecordsConfig = rawToNormalized(check.DNSRecordsConfig)
-	state.CheckSourceCritical = rawToNormalized(check.CheckSourceCritical)
-	state.ResponseAssertions = rawToNormalized(check.ResponseAssertions)
+	state.HTTPHeaders = mapToNormalized(check.HttpHeaders)
+	state.HTTPFormLoginData = mapToNormalized(check.HttpFormLoginData)
+	state.APIScenarioSteps = mapToNormalized(check.ApiScenarioSteps)
+	state.OIDCConfig = mapToNormalized(check.OidcConfig)
+	state.DNSRecordsConfig = mapToNormalized(check.DnsRecordsConfig)
+	state.CheckSourceCritical = mapToNormalized(check.CheckSourceCritical)
+	state.ResponseAssertions = sliceToNormalized(check.ResponseAssertions)
 	// api_scenario_secrets is write-only — never refreshed from the API.
 
 	return diags
 }
 
-func rawToNormalized(raw json.RawMessage) jsontypes.Normalized {
-	s := string(raw)
-	if len(raw) == 0 || s == "null" {
-		return jsontypes.NewNormalizedNull()
+// strVal / intVal / boolVal deref an SDK response pointer into a concrete framework
+// value (zero value when nil), keeping Computed attributes known rather than null.
+func strVal(p *string) types.String {
+	if p == nil {
+		return types.StringValue("")
 	}
-	return jsontypes.NewNormalizedValue(s)
+	return types.StringValue(*p)
 }
 
-// normToRaw converts a plan/config jsontypes.Normalized into a request payload
-// (nil when null/unknown so omitempty drops it).
-func normToRaw(n jsontypes.Normalized) json.RawMessage {
-	if n.IsNull() || n.IsUnknown() {
+func intVal(p *int) types.Int64 {
+	if p == nil {
+		return types.Int64Value(0)
+	}
+	return types.Int64Value(int64(*p))
+}
+
+func boolVal(p *bool) types.Bool {
+	if p == nil {
+		return types.BoolValue(false)
+	}
+	return types.BoolValue(*p)
+}
+
+func authMethodVal(p *models.AuthMethod) types.String {
+	if p == nil {
+		return types.StringValue("")
+	}
+	return types.StringValue(string(*p))
+}
+
+func scheduleTypeVal(p *models.ScheduleType) types.String {
+	if p == nil {
+		return types.StringValue("")
+	}
+	return types.StringValue(string(*p))
+}
+
+func authMethodPtr(s string) *models.AuthMethod {
+	if s == "" {
 		return nil
 	}
-	return json.RawMessage(n.ValueString())
+	m := models.AuthMethod(s)
+	return &m
 }
 
-// secretRawUpdate is the write-only-secret analogue for a JSON-object secret:
+func scheduleTypePtr(s string) *models.ScheduleType {
+	if s == "" {
+		return nil
+	}
+	t := models.ScheduleType(s)
+	return &t
+}
+
+// normToMap converts a plan/config JSON-object Normalized into the SDK's
+// *map[string]interface{} (nil when null/unknown so omitempty drops it).
+func normToMap(n jsontypes.Normalized) (*map[string]interface{}, diag.Diagnostics) {
+	var diags diag.Diagnostics
+	if n.IsNull() || n.IsUnknown() {
+		return nil, diags
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(n.ValueString()), &m); err != nil {
+		diags.AddError("Invalid JSON object", err.Error())
+		return nil, diags
+	}
+	return &m, diags
+}
+
+// normToSlice converts a plan/config JSON-array Normalized into the SDK's
+// *[]interface{} (nil when null/unknown so omitempty drops it).
+func normToSlice(n jsontypes.Normalized) (*[]interface{}, diag.Diagnostics) {
+	var diags diag.Diagnostics
+	if n.IsNull() || n.IsUnknown() {
+		return nil, diags
+	}
+	var s []interface{}
+	if err := json.Unmarshal([]byte(n.ValueString()), &s); err != nil {
+		diags.AddError("Invalid JSON array", err.Error())
+		return nil, diags
+	}
+	return &s, diags
+}
+
+// mapToNormalized / sliceToNormalized marshal an SDK response blob back into a
+// semantic-equality Normalized value (null when the pointer is nil).
+func mapToNormalized(m *map[string]interface{}) jsontypes.Normalized {
+	if m == nil {
+		return jsontypes.NewNormalizedNull()
+	}
+	b, err := json.Marshal(*m)
+	if err != nil || string(b) == "null" {
+		return jsontypes.NewNormalizedNull()
+	}
+	return jsontypes.NewNormalizedValue(string(b))
+}
+
+func sliceToNormalized(s *[]interface{}) jsontypes.Normalized {
+	if s == nil {
+		return jsontypes.NewNormalizedNull()
+	}
+	b, err := json.Marshal(*s)
+	if err != nil || string(b) == "null" {
+		return jsontypes.NewNormalizedNull()
+	}
+	return jsontypes.NewNormalizedValue(string(b))
+}
+
+// secretMapUpdate is the write-only-secret analogue for a JSON-object secret:
 // send the new value if set, send an empty object {} to CLEAR it when it was set
 // before and removed now, or nil (omit — untouched) when it was never set.
 // NOTE: clear must be {} not null — the backend's update is `if value is not None`,
 // so a JSON null would be skipped and the encrypted secret would linger.
-func secretRawUpdate(plan, prior jsontypes.Normalized) json.RawMessage {
+func secretMapUpdate(plan, prior jsontypes.Normalized) (*map[string]interface{}, diag.Diagnostics) {
+	var diags diag.Diagnostics
 	if !plan.IsNull() && !plan.IsUnknown() {
-		return json.RawMessage(plan.ValueString())
+		return normToMap(plan)
 	}
 	if !prior.IsNull() && !prior.IsUnknown() {
-		return json.RawMessage("{}")
+		empty := map[string]interface{}{}
+		return &empty, diags
 	}
-	return nil
+	return nil, diags
 }
 
 // secretUpdate decides what to send for a write-only secret on update:
@@ -925,6 +983,20 @@ func intsToInt64s(in []int) []int64 {
 		out[i] = int64(v)
 	}
 	return out
+}
+
+func derefInts(p *[]int) []int {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+func derefStrs(p *[]string) []string {
+	if p == nil {
+		return nil
+	}
+	return *p
 }
 
 // listToInts / listToStrs convert a plan/config types.List into a Go slice.

@@ -7,7 +7,7 @@ terraform {
 }
 
 provider "systeam" {
-  api_url   = "https://syschecks.com"
+  api_url   = "https://systeam.pl/api"
   api_token = var.systeam_token
 }
 

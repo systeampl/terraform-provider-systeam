@@ -13,7 +13,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/systeampl/terraform-provider-systeam/internal/client"
+	syschecks "github.com/systeampl/syschecks-go"
+	"github.com/systeampl/syschecks-go/models"
+	"github.com/systeampl/terraform-provider-systeam/internal/sdkutil"
 )
 
 var (
@@ -23,7 +25,7 @@ var (
 )
 
 type projectResource struct {
-	client *client.Client
+	sdk *syschecks.Client
 }
 
 func NewResource() resource.Resource {
@@ -76,16 +78,16 @@ func (r *projectResource) Configure(_ context.Context, req resource.ConfigureReq
 		return
 	}
 
-	c, ok := req.ProviderData.(*client.Client)
+	sdk, ok := req.ProviderData.(*syschecks.Client)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Resource Configure Type",
-			fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData),
+			fmt.Sprintf("Expected *syschecks.Client, got: %T", req.ProviderData),
 		)
 		return
 	}
 
-	r.client = c
+	r.sdk = sdk
 }
 
 func (r *projectResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -96,27 +98,15 @@ func (r *projectResource) Create(ctx context.Context, req resource.CreateRequest
 	}
 
 	orgID := int(plan.OrganizationID.ValueInt64())
-	createReq := client.ProjectCreateRequest{
-		Name:                 plan.Name.ValueString(),
-		OrganizationID:       orgID,
-		AccessControlEnabled: plan.AccessControlEnabled.ValueBool(),
-	}
-	if !plan.Description.IsNull() && !plan.Description.IsUnknown() {
-		createReq.Description = plan.Description.ValueString()
-	}
-
-	project, err := r.client.CreateProject(ctx, orgID, createReq)
+	project, err := r.sdk.Organizations.CreateOrganizationProject(ctx, orgID, models.CreateOrganizationProjectJSONRequestBody{
+		Name: plan.Name.ValueString(),
+	})
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating project", err.Error())
 		return
 	}
 
-	plan.ID = types.Int64Value(int64(project.ID))
-	plan.Name = types.StringValue(project.Name)
-	plan.Description = types.StringValue(project.Description)
-	plan.OrganizationID = types.Int64Value(int64(project.OrganizationID))
-	plan.AccessControlEnabled = types.BoolValue(project.AccessControlEnabled)
-
+	applyProject(&plan, project)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -130,9 +120,9 @@ func (r *projectResource) Read(ctx context.Context, req resource.ReadRequest, re
 	orgID := int(state.OrganizationID.ValueInt64())
 	projectID := int(state.ID.ValueInt64())
 
-	project, err := r.client.GetProject(ctx, orgID, projectID)
+	project, err := r.sdk.Organizations.GetOrganizationProject(ctx, orgID, projectID)
 	if err != nil {
-		if apiErr, ok := err.(*client.APIError); ok && apiErr.IsNotFound() {
+		if sdkutil.IsNotFound(err) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -140,12 +130,7 @@ func (r *projectResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 
-	state.ID = types.Int64Value(int64(project.ID))
-	state.Name = types.StringValue(project.Name)
-	state.Description = types.StringValue(project.Description)
-	state.OrganizationID = types.Int64Value(int64(project.OrganizationID))
-	state.AccessControlEnabled = types.BoolValue(project.AccessControlEnabled)
-
+	applyProject(&state, project)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -161,27 +146,17 @@ func (r *projectResource) Update(ctx context.Context, req resource.UpdateRequest
 
 	name := plan.Name.ValueString()
 	accessControl := plan.AccessControlEnabled.ValueBool()
-	updateReq := client.ProjectUpdateRequest{
+	project, err := r.sdk.Organizations.UpdateOrganizationProject(ctx, orgID, projectID, models.UpdateOrganizationProjectJSONRequestBody{
 		Name:                 &name,
+		Description:          sdkutil.StrPtr(plan.Description),
 		AccessControlEnabled: &accessControl,
-	}
-	if !plan.Description.IsNull() && !plan.Description.IsUnknown() {
-		desc := plan.Description.ValueString()
-		updateReq.Description = &desc
-	}
-
-	project, err := r.client.UpdateProject(ctx, orgID, projectID, updateReq)
+	})
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating project", err.Error())
 		return
 	}
 
-	plan.ID = types.Int64Value(int64(project.ID))
-	plan.Name = types.StringValue(project.Name)
-	plan.Description = types.StringValue(project.Description)
-	plan.OrganizationID = types.Int64Value(int64(project.OrganizationID))
-	plan.AccessControlEnabled = types.BoolValue(project.AccessControlEnabled)
-
+	applyProject(&plan, project)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -195,10 +170,11 @@ func (r *projectResource) Delete(ctx context.Context, req resource.DeleteRequest
 	orgID := int(state.OrganizationID.ValueInt64())
 	projectID := int(state.ID.ValueInt64())
 
-	err := r.client.DeleteProject(ctx, orgID, projectID)
-	if err != nil {
+	if _, err := r.sdk.Organizations.DeleteOrganizationProject(ctx, orgID, projectID); err != nil {
+		if sdkutil.IsNotFound(err) {
+			return
+		}
 		resp.Diagnostics.AddError("Error deleting project", err.Error())
-		return
 	}
 }
 
@@ -232,4 +208,16 @@ func (r *projectResource) ImportState(ctx context.Context, req resource.ImportSt
 
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("organization_id"), orgID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), projectID)...)
+}
+
+func applyProject(m *ProjectModel, p *models.ProjectResponse) {
+	m.ID = types.Int64Value(int64(p.Id))
+	m.Name = types.StringValue(p.Name)
+	m.Description = sdkutil.Str(p.Description)
+	if p.OrganizationId != nil {
+		m.OrganizationID = types.Int64Value(int64(*p.OrganizationId))
+	}
+	if p.AccessControlEnabled != nil {
+		m.AccessControlEnabled = types.BoolValue(*p.AccessControlEnabled)
+	}
 }

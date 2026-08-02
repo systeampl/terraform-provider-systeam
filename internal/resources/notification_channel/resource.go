@@ -16,7 +16,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/systeampl/terraform-provider-systeam/internal/client"
+	syschecks "github.com/systeampl/syschecks-go"
+	"github.com/systeampl/syschecks-go/models"
+	"github.com/systeampl/terraform-provider-systeam/internal/sdkutil"
 )
 
 var (
@@ -26,7 +28,7 @@ var (
 )
 
 type notificationChannelResource struct {
-	client *client.Client
+	sdk *syschecks.Client
 }
 
 func NewResource() resource.Resource {
@@ -88,15 +90,15 @@ func (r *notificationChannelResource) Configure(_ context.Context, req resource.
 	if req.ProviderData == nil {
 		return
 	}
-	c, ok := req.ProviderData.(*client.Client)
+	sdk, ok := req.ProviderData.(*syschecks.Client)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Resource Configure Type",
-			fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData),
+			fmt.Sprintf("Expected *syschecks.Client, got: %T", req.ProviderData),
 		)
 		return
 	}
-	r.client = c
+	r.sdk = sdk
 }
 
 func (r *notificationChannelResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -117,19 +119,20 @@ func (r *notificationChannelResource) Create(ctx context.Context, req resource.C
 		apiConfig[k] = v
 	}
 
-	createReq := client.NotificationChannelCreateRequest{
+	isActive := plan.IsActive.ValueBool()
+	createReq := models.CreateChannelJSONRequestBody{
 		Name:        plan.Name.ValueString(),
-		ChannelType: plan.ChannelType.ValueString(),
+		ChannelType: models.ChannelType(plan.ChannelType.ValueString()),
 		Config:      apiConfig,
-		IsActive:    plan.IsActive.ValueBool(),
+		IsActive:    &isActive,
 	}
 
 	if !plan.OrganizationID.IsNull() && !plan.OrganizationID.IsUnknown() {
 		v := int(plan.OrganizationID.ValueInt64())
-		createReq.OrganizationID = &v
+		createReq.OrganizationId = &v
 	}
 
-	channel, err := r.client.CreateNotificationChannel(ctx, createReq)
+	channel, err := r.sdk.NotificationChannels.CreateChannel(ctx, createReq)
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating notification channel", err.Error())
 		return
@@ -146,9 +149,9 @@ func (r *notificationChannelResource) Read(ctx context.Context, req resource.Rea
 		return
 	}
 
-	channel, err := r.client.GetNotificationChannel(ctx, int(state.ID.ValueInt64()))
+	channel, err := r.sdk.NotificationChannels.GetChannel(ctx, int(state.ID.ValueInt64()))
 	if err != nil {
-		if apiErr, ok := err.(*client.APIError); ok && apiErr.IsNotFound() {
+		if sdkutil.IsNotFound(err) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -181,13 +184,13 @@ func (r *notificationChannelResource) Update(ctx context.Context, req resource.U
 	name := plan.Name.ValueString()
 	isActive := plan.IsActive.ValueBool()
 
-	updateReq := client.NotificationChannelUpdateRequest{
+	updateReq := models.UpdateChannelJSONRequestBody{
 		Name:     &name,
 		Config:   &apiConfig,
 		IsActive: &isActive,
 	}
 
-	channel, err := r.client.UpdateNotificationChannel(ctx, int(plan.ID.ValueInt64()), updateReq)
+	channel, err := r.sdk.NotificationChannels.UpdateChannel(ctx, int(plan.ID.ValueInt64()), updateReq)
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating notification channel", err.Error())
 		return
@@ -204,9 +207,8 @@ func (r *notificationChannelResource) Delete(ctx context.Context, req resource.D
 		return
 	}
 
-	err := r.client.DeleteNotificationChannel(ctx, int(state.ID.ValueInt64()))
-	if err != nil {
-		if apiErr, ok := err.(*client.APIError); ok && apiErr.IsNotFound() {
+	if _, err := r.sdk.NotificationChannels.DeleteChannel(ctx, int(state.ID.ValueInt64())); err != nil {
+		if sdkutil.IsNotFound(err) {
 			return
 		}
 		resp.Diagnostics.AddError("Error deleting notification channel", err.Error())
@@ -222,23 +224,25 @@ func (r *notificationChannelResource) ImportState(ctx context.Context, req resou
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), id)...)
 }
 
-func mapChannelToState(ctx context.Context, channel *client.NotificationChannel, state *NotificationChannelModel) diag.Diagnostics {
+func mapChannelToState(ctx context.Context, channel *models.NotificationChannelResponse, state *NotificationChannelModel) diag.Diagnostics {
 	var diags diag.Diagnostics
 
-	state.ID = types.Int64Value(int64(channel.ID))
+	state.ID = types.Int64Value(int64(channel.Id))
 	state.Name = types.StringValue(channel.Name)
-	state.ChannelType = types.StringValue(channel.ChannelType)
+	state.ChannelType = types.StringValue(string(channel.ChannelType))
 	state.IsActive = types.BoolValue(channel.IsActive)
 
-	if channel.OrganizationID != nil {
-		state.OrganizationID = types.Int64Value(int64(*channel.OrganizationID))
+	if channel.OrganizationId != nil {
+		state.OrganizationID = types.Int64Value(int64(*channel.OrganizationId))
 	} else {
 		state.OrganizationID = types.Int64Null()
 	}
 
-	configMap := make(map[string]string, len(channel.Config))
-	for k, v := range channel.Config {
-		configMap[k] = fmt.Sprintf("%v", v)
+	configMap := make(map[string]string)
+	if channel.Config != nil {
+		for k, v := range *channel.Config {
+			configMap[k] = fmt.Sprintf("%v", v)
+		}
 	}
 	tfMap, d := types.MapValueFrom(ctx, types.StringType, configMap)
 	diags.Append(d...)

@@ -15,7 +15,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/systeampl/terraform-provider-systeam/internal/client"
+	syschecks "github.com/systeampl/syschecks-go"
+	"github.com/systeampl/syschecks-go/models"
+	"github.com/systeampl/terraform-provider-systeam/internal/sdkutil"
 )
 
 var (
@@ -25,7 +27,7 @@ var (
 )
 
 type contactMethodResource struct {
-	client *client.Client
+	sdk *syschecks.Client
 }
 
 func NewResource() resource.Resource {
@@ -81,15 +83,15 @@ func (r *contactMethodResource) Configure(_ context.Context, req resource.Config
 	if req.ProviderData == nil {
 		return
 	}
-	c, ok := req.ProviderData.(*client.Client)
+	sdk, ok := req.ProviderData.(*syschecks.Client)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Resource Configure Type",
-			fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData),
+			fmt.Sprintf("Expected *syschecks.Client, got: %T", req.ProviderData),
 		)
 		return
 	}
-	r.client = c
+	r.sdk = sdk
 }
 
 func (r *contactMethodResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -99,14 +101,31 @@ func (r *contactMethodResource) Create(ctx context.Context, req resource.CreateR
 		return
 	}
 
-	cm, err := r.client.CreateContactMethod(ctx, client.ContactMethodCreateRequest{
+	cm, err := r.sdk.ContactMethods.CreateContactMethod(ctx, models.CreateContactMethodJSONRequestBody{
 		Kind:  plan.Kind.ValueString(),
-		Value: optionalString(plan.Value),
-		Label: optionalString(plan.Label),
+		Value: sdkutil.StrPtr(plan.Value),
+		Label: sdkutil.StrPtr(plan.Label),
 	})
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating contact method", err.Error())
 		return
+	}
+
+	// The create endpoint ignores enabled (it always starts enabled=true) and
+	// applies no server-side label defaulting we can rely on. If the plan asks
+	// for enabled=false, reconcile it with the update endpoint so create honors
+	// the desired state.
+	if !plan.Enabled.IsNull() && !plan.Enabled.IsUnknown() && plan.Enabled.ValueBool() != cm.Enabled {
+		enabled := plan.Enabled.ValueBool()
+		updated, uerr := r.sdk.ContactMethods.UpdateContactMethod(ctx, cm.Id, models.UpdateContactMethodJSONRequestBody{
+			Label:   sdkutil.StrPtr(plan.Label),
+			Enabled: &enabled,
+		})
+		if uerr != nil {
+			resp.Diagnostics.AddError("Error setting contact method enabled state", uerr.Error())
+			return
+		}
+		cm = updated
 	}
 
 	mapContactMethodToState(cm, &plan)
@@ -120,10 +139,26 @@ func (r *contactMethodResource) Read(ctx context.Context, req resource.ReadReque
 		return
 	}
 
-	cm, err := r.client.GetContactMethod(ctx, int(state.ID.ValueInt64()))
+	// No GET-by-id endpoint: list and find by id.
+	methods, err := r.sdk.ContactMethods.ListContactMethods(ctx)
 	if err != nil {
+		if sdkutil.IsNotFound(err) {
+			resp.State.RemoveResource(ctx)
+			return
+		}
 		resp.Diagnostics.AddError("Error reading contact method", err.Error())
 		return
+	}
+
+	id := int(state.ID.ValueInt64())
+	var cm *models.ContactMethodResponse
+	if methods != nil {
+		for i := range *methods {
+			if (*methods)[i].Id == id {
+				cm = &(*methods)[i]
+				break
+			}
+		}
 	}
 	if cm == nil {
 		resp.State.RemoveResource(ctx)
@@ -142,8 +177,8 @@ func (r *contactMethodResource) Update(ctx context.Context, req resource.UpdateR
 	}
 
 	enabled := plan.Enabled.ValueBool()
-	cm, err := r.client.UpdateContactMethod(ctx, int(plan.ID.ValueInt64()), client.ContactMethodUpdateRequest{
-		Label:   optionalString(plan.Label),
+	cm, err := r.sdk.ContactMethods.UpdateContactMethod(ctx, int(plan.ID.ValueInt64()), models.UpdateContactMethodJSONRequestBody{
+		Label:   sdkutil.StrPtr(plan.Label),
 		Enabled: &enabled,
 	})
 	if err != nil {
@@ -161,9 +196,8 @@ func (r *contactMethodResource) Delete(ctx context.Context, req resource.DeleteR
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	err := r.client.DeleteContactMethod(ctx, int(state.ID.ValueInt64()))
-	if err != nil {
-		if apiErr, ok := err.(*client.APIError); ok && apiErr.IsNotFound() {
+	if _, err := r.sdk.ContactMethods.DeleteContactMethod(ctx, int(state.ID.ValueInt64())); err != nil {
+		if sdkutil.IsNotFound(err) {
 			return
 		}
 		resp.Diagnostics.AddError("Error deleting contact method", err.Error())
@@ -179,26 +213,14 @@ func (r *contactMethodResource) ImportState(ctx context.Context, req resource.Im
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), id)...)
 }
 
-func mapContactMethodToState(cm *client.ContactMethod, m *ContactMethodModel) {
-	m.ID = types.Int64Value(int64(cm.ID))
+func mapContactMethodToState(cm *models.ContactMethodResponse, m *ContactMethodModel) {
+	m.ID = types.Int64Value(int64(cm.Id))
 	m.Kind = types.StringValue(cm.Kind)
-	m.Value = stringOrNull(cm.Value)
-	m.Label = stringOrNull(cm.Label)
+	// The API masks value in every response (e.g. "e•••@example.com"), so it can
+	// never round-trip. value is RequiresReplace, so the plan/prior state already
+	// holds the authoritative secret — leave m.Value untouched rather than
+	// clobbering it with the mask (which would break plan consistency).
+	m.Label = sdkutil.Str(cm.Label)
 	m.Enabled = types.BoolValue(cm.Enabled)
 	m.Verified = types.BoolValue(cm.Verified)
-}
-
-func optionalString(v types.String) *string {
-	if v.IsNull() || v.IsUnknown() {
-		return nil
-	}
-	s := v.ValueString()
-	return &s
-}
-
-func stringOrNull(p *string) types.String {
-	if p == nil {
-		return types.StringNull()
-	}
-	return types.StringValue(*p)
 }

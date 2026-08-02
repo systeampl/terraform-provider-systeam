@@ -9,8 +9,14 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/systeampl/terraform-provider-systeam/internal/client"
+	syschecks "github.com/systeampl/syschecks-go"
+	escpolds "github.com/systeampl/terraform-provider-systeam/internal/datasources/escalation_policy"
+	chds "github.com/systeampl/terraform-provider-systeam/internal/datasources/notification_channel"
+	schedds "github.com/systeampl/terraform-provider-systeam/internal/datasources/oncall_schedule"
 	orgds "github.com/systeampl/terraform-provider-systeam/internal/datasources/organization"
+	projds "github.com/systeampl/terraform-provider-systeam/internal/datasources/project"
+	svcds "github.com/systeampl/terraform-provider-systeam/internal/datasources/service"
+	teamds "github.com/systeampl/terraform-provider-systeam/internal/datasources/team"
 	"github.com/systeampl/terraform-provider-systeam/internal/resources/agent_registration_token"
 	checkresource "github.com/systeampl/terraform-provider-systeam/internal/resources/check"
 	"github.com/systeampl/terraform-provider-systeam/internal/resources/check_slo"
@@ -96,9 +102,13 @@ func (p *systeamProvider) Configure(ctx context.Context, req provider.ConfigureR
 		return
 	}
 
-	c := client.NewClient(apiURL, apiToken)
-	resp.ResourceData = c
-	resp.DataSourceData = c
+	sdk, err := syschecks.New(apiURL, apiToken)
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to build SDK client", err.Error())
+		return
+	}
+	resp.ResourceData = sdk
+	resp.DataSourceData = sdk
 }
 
 func (p *systeamProvider) Resources(_ context.Context) []func() resource.Resource {
@@ -124,5 +134,11 @@ func (p *systeamProvider) Resources(_ context.Context) []func() resource.Resourc
 func (p *systeamProvider) DataSources(_ context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
 		orgds.NewDataSource,
+		teamds.NewDataSource,
+		svcds.NewDataSource,
+		escpolds.NewDataSource,
+		schedds.NewDataSource,
+		chds.NewDataSource,
+		projds.NewDataSource,
 	}
 }

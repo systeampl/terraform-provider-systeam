@@ -13,7 +13,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/systeampl/terraform-provider-systeam/internal/client"
+	syschecks "github.com/systeampl/syschecks-go"
+	"github.com/systeampl/syschecks-go/models"
+	"github.com/systeampl/terraform-provider-systeam/internal/sdkutil"
 )
 
 var (
@@ -23,7 +25,7 @@ var (
 )
 
 type teamResource struct {
-	client *client.Client
+	sdk *syschecks.Client
 }
 
 func NewResource() resource.Resource {
@@ -83,15 +85,15 @@ func (r *teamResource) Configure(_ context.Context, req resource.ConfigureReques
 	if req.ProviderData == nil {
 		return
 	}
-	c, ok := req.ProviderData.(*client.Client)
+	sdk, ok := req.ProviderData.(*syschecks.Client)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Resource Configure Type",
-			fmt.Sprintf("Expected *client.Client, got: %T", req.ProviderData),
+			fmt.Sprintf("Expected *syschecks.Client, got: %T", req.ProviderData),
 		)
 		return
 	}
-	r.client = c
+	r.sdk = sdk
 }
 
 func (r *teamResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -101,17 +103,17 @@ func (r *teamResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 
-	team, err := r.client.CreateTeam(ctx, int(plan.OrganizationID.ValueInt64()), client.TeamCreateRequest{
+	team, err := r.sdk.Teams.CreateTeam(ctx, int(plan.OrganizationID.ValueInt64()), models.CreateTeamJSONRequestBody{
 		Name:        plan.Name.ValueString(),
-		Slug:        plan.Slug.ValueString(),
-		Description: plan.Description.ValueString(),
+		Slug:        sdkutil.StrPtr(plan.Slug),
+		Description: sdkutil.StrPtr(plan.Description),
 	})
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating team", err.Error())
 		return
 	}
 
-	mapTeamToState(team, &plan)
+	applyTeam(&plan, team.Id, team.OrganizationId, team.Name, team.Slug, team.Description, team.IsActive, team.MemberCount)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -122,9 +124,9 @@ func (r *teamResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 		return
 	}
 
-	team, err := r.client.GetTeam(ctx, int(state.OrganizationID.ValueInt64()), int(state.ID.ValueInt64()))
+	team, err := r.sdk.Teams.GetTeam(ctx, int(state.OrganizationID.ValueInt64()), int(state.ID.ValueInt64()))
 	if err != nil {
-		if apiErr, ok := err.(*client.APIError); ok && apiErr.IsNotFound() {
+		if sdkutil.IsNotFound(err) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -132,7 +134,7 @@ func (r *teamResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 		return
 	}
 
-	mapTeamToState(team, &state)
+	applyTeam(&state, team.Id, team.OrganizationId, team.Name, team.Slug, team.Description, team.IsActive, team.MemberCount)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -143,16 +145,17 @@ func (r *teamResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		return
 	}
 
-	team, err := r.client.UpdateTeam(ctx, int(plan.OrganizationID.ValueInt64()), int(plan.ID.ValueInt64()), client.TeamUpdateRequest{
-		Name:        plan.Name.ValueString(),
-		Description: plan.Description.ValueString(),
+	name := plan.Name.ValueString()
+	team, err := r.sdk.Teams.UpdateTeam(ctx, int(plan.OrganizationID.ValueInt64()), int(plan.ID.ValueInt64()), models.UpdateTeamJSONRequestBody{
+		Name:        &name,
+		Description: sdkutil.StrPtr(plan.Description),
 	})
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating team", err.Error())
 		return
 	}
 
-	mapTeamToState(team, &plan)
+	applyTeam(&plan, team.Id, team.OrganizationId, team.Name, team.Slug, team.Description, team.IsActive, team.MemberCount)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -162,9 +165,8 @@ func (r *teamResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	err := r.client.DeleteTeam(ctx, int(state.OrganizationID.ValueInt64()), int(state.ID.ValueInt64()))
-	if err != nil {
-		if apiErr, ok := err.(*client.APIError); ok && apiErr.IsNotFound() {
+	if _, err := r.sdk.Teams.DeleteTeam(ctx, int(state.OrganizationID.ValueInt64()), int(state.ID.ValueInt64())); err != nil {
+		if sdkutil.IsNotFound(err) {
 			return
 		}
 		resp.Diagnostics.AddError("Error deleting team", err.Error())
@@ -191,12 +193,12 @@ func (r *teamResource) ImportState(ctx context.Context, req resource.ImportState
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), teamID)...)
 }
 
-func mapTeamToState(team *client.Team, m *TeamModel) {
-	m.ID = types.Int64Value(int64(team.ID))
-	m.OrganizationID = types.Int64Value(int64(team.OrganizationID))
-	m.Name = types.StringValue(team.Name)
-	m.Slug = types.StringValue(team.Slug)
-	m.Description = types.StringValue(team.Description)
-	m.IsActive = types.BoolValue(team.IsActive)
-	m.MemberCount = types.Int64Value(int64(team.MemberCount))
+func applyTeam(m *TeamModel, id, orgID int, name, slug string, description *string, isActive bool, memberCount int) {
+	m.ID = types.Int64Value(int64(id))
+	m.OrganizationID = types.Int64Value(int64(orgID))
+	m.Name = types.StringValue(name)
+	m.Slug = types.StringValue(slug)
+	m.Description = sdkutil.Str(description)
+	m.IsActive = types.BoolValue(isActive)
+	m.MemberCount = types.Int64Value(int64(memberCount))
 }
