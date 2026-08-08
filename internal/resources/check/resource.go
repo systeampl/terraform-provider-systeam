@@ -347,9 +347,8 @@ func (r *checkResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 			"http_form_login_data": schema.StringAttribute{
 				CustomType:  jsontypes.NormalizedType{},
 				Optional:    true,
-				Computed:    true,
 				Sensitive:   true, // typically contains {username, password}
-				Description: "Form fields for HTTP form login as a JSON object, e.g. jsonencode({username=\"u\",password=\"p\"}).",
+				Description: "Form fields for HTTP form login as a JSON object, e.g. jsonencode({username=\"u\",password=\"p\"}). Write-only: holds credentials, never read back from the API.",
 			},
 			"api_scenario_steps": schema.StringAttribute{
 				CustomType:  jsontypes.NormalizedType{},
@@ -824,13 +823,14 @@ func mapCheckToState(ctx context.Context, check *models.CheckResponse, state *Ch
 	state.AssignedAgentIDs = agentList
 
 	state.HTTPHeaders = mapToNormalized(check.HttpHeaders)
-	state.HTTPFormLoginData = mapToNormalized(check.HttpFormLoginData)
 	state.APIScenarioSteps = mapToNormalized(check.ApiScenarioSteps)
 	state.OIDCConfig = mapToNormalized(check.OidcConfig)
 	state.DNSRecordsConfig = mapToNormalized(check.DnsRecordsConfig)
 	state.CheckSourceCritical = mapToNormalized(check.CheckSourceCritical)
 	state.ResponseAssertions = sliceToNormalized(check.ResponseAssertions)
-	// api_scenario_secrets is write-only — never refreshed from the API.
+	// http_form_login_data and api_scenario_secrets are write-only secrets — the API no
+	// longer returns them on read (they hold credentials), so they are never refreshed
+	// from the API; the prior plan/state value is preserved to keep `plan` a no-op.
 
 	return diags
 }
