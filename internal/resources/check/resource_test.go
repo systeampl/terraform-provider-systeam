@@ -2,9 +2,14 @@ package check
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework-jsontypes/jsontypes"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+
+	"github.com/systeampl/syschecks-go/models"
 )
 
 // JSON-object fields use jsontypes.Normalized so formatting and key order don't
@@ -44,5 +49,126 @@ func TestSliceToNormalized(t *testing.T) {
 	}
 	if s := ([]interface{}{"a"}); sliceToNormalized(&s).IsNull() {
 		t.Error("non-empty slice must not be null")
+	}
+}
+
+// TestContentChangeFieldsRoundTrip guards against the class of bug fixed in
+// fix/create-check-missing-fields: a field accepted by the schema but dropped
+// on read-back makes Terraform report "Provider produced inconsistent result
+// after apply" because state no longer matches the applied config. Every
+// field the API echoes back must be re-mapped in mapCheckToState.
+func TestContentChangeFieldsRoundTrip(t *testing.T) {
+	ctx := context.Background()
+
+	enabled := true
+	severity := "degraded"
+	patterns := []string{`\d{4}-\d{2}-\d{2}`, `session_id=\w+`}
+	geo := true
+	check := &models.CheckResponse{
+		ContentChangeEnabled:         &enabled,
+		ContentChangeSeverity:        &severity,
+		ContentIgnorePatterns:        &patterns,
+		GeoContentConsistencyEnabled: &geo,
+	}
+
+	state := &CheckModel{}
+	diags := mapCheckToState(ctx, check, state)
+	if diags.HasError() {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+
+	if !state.ContentChangeEnabled.ValueBool() {
+		t.Error("content_change_enabled: want true after read-back")
+	}
+	if got := state.ContentChangeSeverity.ValueString(); got != "degraded" {
+		t.Errorf("content_change_severity: want %q, got %q", "degraded", got)
+	}
+	if !state.GeoContentConsistencyEnabled.ValueBool() {
+		t.Error("geo_content_consistency_enabled: want true after read-back")
+	}
+
+	var gotPatterns []string
+	if d := state.ContentIgnorePatterns.ElementsAs(ctx, &gotPatterns, false); d.HasError() {
+		t.Fatalf("unexpected diagnostics reading back content_ignore_patterns: %v", d)
+	}
+	if len(gotPatterns) != len(patterns) {
+		t.Fatalf("content_ignore_patterns: want %v, got %v", patterns, gotPatterns)
+	}
+	for i, p := range patterns {
+		if gotPatterns[i] != p {
+			t.Errorf("content_ignore_patterns[%d]: want %q, got %q", i, p, gotPatterns[i])
+		}
+	}
+
+	// A plan that set content_ignore_patterns to the same list must round-trip
+	// to an identical types.List value, or Terraform sees a post-apply diff.
+	planList, d := types.ListValueFrom(ctx, types.StringType, patterns)
+	if d.HasError() {
+		t.Fatalf("unexpected diagnostics building plan list: %v", d)
+	}
+	if !planList.Equal(state.ContentIgnorePatterns) {
+		t.Error("content_ignore_patterns: state after read-back does not equal the planned list")
+	}
+}
+
+// TestContentIgnorePatternsNullRoundTrip mirrors dns_expected_ips: when the API
+// returns no patterns (nil, the server-side default), state must come back
+// null — not an empty non-null list, which would also produce a diff against a
+// config that never set the attribute.
+func TestContentIgnorePatternsNullRoundTrip(t *testing.T) {
+	ctx := context.Background()
+
+	check := &models.CheckResponse{ContentIgnorePatterns: nil}
+	state := &CheckModel{}
+	diags := mapCheckToState(ctx, check, state)
+	if diags.HasError() {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+
+	if !state.ContentIgnorePatterns.IsNull() {
+		t.Errorf("content_ignore_patterns: want null when API returns no patterns, got %v", state.ContentIgnorePatterns)
+	}
+}
+
+// TestContentIgnorePatternsClearOnUpdate pins the provider's half of the
+// contract the backend guarantees via
+// test_api_clears_patterns_when_sent_an_empty_list: a config that explicitly
+// sets content_ignore_patterns = [] must produce a request body containing
+// "content_ignore_patterns":[] on Update, not an omitted field — otherwise a
+// previously-set pattern can never be removed (the backend's `if x is not
+// None` guard skips the clear).
+func TestContentIgnorePatternsClearOnUpdate(t *testing.T) {
+	ctx := context.Background()
+
+	emptyList, d := types.ListValueFrom(ctx, types.StringType, []string{})
+	if d.HasError() {
+		t.Fatalf("unexpected diagnostics building empty list: %v", d)
+	}
+	cleared, d := listToStrs(ctx, emptyList)
+	if d.HasError() {
+		t.Fatalf("unexpected diagnostics from listToStrs: %v", d)
+	}
+	if cleared == nil {
+		t.Fatal("listToStrs([]) must return a non-nil empty slice — a nil slice here " +
+			"omits the field from the update payload and the backend never clears the patterns")
+	}
+
+	var updateReq models.UpdateCheckJSONRequestBody
+	updateReq.ContentIgnorePatterns = &cleared
+	body, err := json.Marshal(updateReq)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(body), `"content_ignore_patterns":[]`) {
+		t.Errorf("update body must contain an explicit empty list, got: %s", body)
+	}
+
+	// And a null (never-configured) list must stay omitted.
+	nullCleared, d := listToStrs(ctx, types.ListNull(types.StringType))
+	if d.HasError() {
+		t.Fatalf("unexpected diagnostics from listToStrs(null): %v", d)
+	}
+	if nullCleared != nil {
+		t.Error("listToStrs(null) must return nil so the field is omitted from the payload")
 	}
 }

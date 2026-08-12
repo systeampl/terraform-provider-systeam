@@ -58,6 +58,11 @@ type CheckModel struct {
 	ContentMatchText          types.String `tfsdk:"content_match_text"`
 	ContentMatchType          types.String `tfsdk:"content_match_type"`
 	ContentMatchCaseSensitive types.Bool   `tfsdk:"content_match_case_sensitive"`
+	// Content change / geo consistency monitoring
+	ContentChangeEnabled         types.Bool   `tfsdk:"content_change_enabled"`
+	ContentChangeSeverity        types.String `tfsdk:"content_change_severity"`
+	ContentIgnorePatterns        types.List   `tfsdk:"content_ignore_patterns"` // list[string]
+	GeoContentConsistencyEnabled types.Bool   `tfsdk:"geo_content_consistency_enabled"`
 	// HTTP form login
 	HTTPFormLoginEnabled       types.Bool   `tfsdk:"http_form_login_enabled"`
 	HTTPFormLoginURL           types.String `tfsdk:"http_form_login_url"`
