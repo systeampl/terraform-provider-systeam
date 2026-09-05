@@ -33,10 +33,16 @@ Manages a health check.
 - `auth_password` (String, Sensitive) HTTP basic-auth password. Write-only: encrypted server-side, never read back.
 - `auth_username` (String) HTTP basic-auth username.
 - `check_source_critical` (String) Per-source criticality config as JSON.
+- `content_change_enabled` (Boolean) Alert when the response content changes unexpectedly.
+- `content_change_severity` (String) notify, degraded, or down.
+- `content_ignore_patterns` (List of String) Regex patterns to ignore when detecting content changes (e.g. timestamps).
+- `content_match_attribute` (String) Attribute to read when content_match_extract is attribute (e.g. href). Requires content_match_selector.
 - `content_match_case_sensitive` (Boolean) Case-sensitive content match.
 - `content_match_enabled` (Boolean) Enable response content matching.
+- `content_match_extract` (String) What to read from the selected elements: text or attribute. Requires content_match_selector.
+- `content_match_selector` (String) CSS selector scoping the match to part of the page. Required by content_match_type equals/exists/not_exists and by content_match_extract/content_match_attribute.
 - `content_match_text` (String) Text or regex to match in the response.
-- `content_match_type` (String) contains, not_contains, regex.
+- `content_match_type` (String) contains, not_contains, regex, equals, exists, or not_exists. The last three require content_match_selector.
 - `cron_expression` (String) Cron expression (heartbeat checks).
 - `cron_timezone` (String) Cron timezone (heartbeat checks). Server default: UTC.
 - `db_expected_result` (String) Expected query result for validation (database checks).
@@ -67,6 +73,7 @@ Manages a health check.
 - `ftp_path` (String) Path to list/verify.
 - `ftp_protocol` (String) FTP, FTPS or SFTP.
 - `ftp_username` (String) FTP username (empty for anonymous).
+- `geo_content_consistency_enabled` (Boolean) Alert when geo-distributed agents see inconsistent content.
 - `geo_monitoring_enabled` (Boolean) Enable geo-distributed monitoring.
 - `grace_period` (Number) Grace period in seconds before marking as down.
 - `host` (String) Host to check (icmp, tcp, udp, dns, ftp checks).
@@ -74,7 +81,7 @@ Manages a health check.
 - `http_body_type` (String) Request body type: none, json, form, raw.
 - `http_follow_redirects` (Boolean) Follow HTTP redirects.
 - `http_form_check_after_login_url` (String) URL to check after logging in.
-- `http_form_login_data` (String, Sensitive) Form fields for HTTP form login as a JSON object, e.g. jsonencode({username="u",password="p"}).
+- `http_form_login_data` (String, Sensitive) Form fields for HTTP form login as a JSON object, e.g. jsonencode({username="u",password="p"}). Write-only: holds credentials, never read back from the API.
 - `http_form_login_enabled` (Boolean) Authenticate via an HTML form before checking.
 - `http_form_login_success_text` (String) Text confirming successful login.
 - `http_form_login_url` (String) URL to POST the login form to.

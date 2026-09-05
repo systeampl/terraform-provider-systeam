@@ -271,17 +271,46 @@ func (r *checkResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 				Description: "Expected query result for validation (database checks).",
 			},
 			// HTTP auth (auth_password / auth_bearer_token are write-only secrets).
-			"auth_username":                schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString(""), Description: "HTTP basic-auth username."},
-			"auth_password":                schema.StringAttribute{Optional: true, Sensitive: true, Description: "HTTP basic-auth password. Write-only: encrypted server-side, never read back."},
-			"auth_bearer_token":            schema.StringAttribute{Optional: true, Sensitive: true, Description: "HTTP bearer token. Write-only: encrypted server-side, never read back."},
-			"http_body":                    schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString(""), Description: "Request body (POST/PUT/PATCH)."},
-			"http_body_type":               schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("none"), Description: "Request body type: none, json, form, raw."},
-			"http_follow_redirects":        schema.BoolAttribute{Optional: true, Computed: true, Default: booldefault.StaticBool(true), Description: "Follow HTTP redirects."},
-			"content_match_enabled":        schema.BoolAttribute{Optional: true, Computed: true, Default: booldefault.StaticBool(false), Description: "Enable response content matching."},
-			"content_match_text":           schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString(""), Description: "Text or regex to match in the response."},
-			"content_match_type":           schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("contains"), Description: "contains, not_contains, regex."},
+			"auth_username":         schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString(""), Description: "HTTP basic-auth username."},
+			"auth_password":         schema.StringAttribute{Optional: true, Sensitive: true, Description: "HTTP basic-auth password. Write-only: encrypted server-side, never read back."},
+			"auth_bearer_token":     schema.StringAttribute{Optional: true, Sensitive: true, Description: "HTTP bearer token. Write-only: encrypted server-side, never read back."},
+			"http_body":             schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString(""), Description: "Request body (POST/PUT/PATCH)."},
+			"http_body_type":        schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("none"), Description: "Request body type: none, json, form, raw."},
+			"http_follow_redirects": schema.BoolAttribute{Optional: true, Computed: true, Default: booldefault.StaticBool(true), Description: "Follow HTTP redirects."},
+			"content_match_enabled": schema.BoolAttribute{Optional: true, Computed: true, Default: booldefault.StaticBool(false), Description: "Enable response content matching."},
+			"content_match_text":    schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString(""), Description: "Text or regex to match in the response."},
+			"content_match_type": schema.StringAttribute{
+				Optional:    true,
+				Computed:    true,
+				Default:     stringdefault.StaticString("contains"),
+				Description: "contains, not_contains, regex, equals, exists, or not_exists. The last three require content_match_selector.",
+				Validators: []validator.String{
+					stringvalidator.OneOf("contains", "not_contains", "regex", "equals", "exists", "not_exists"),
+				},
+			},
 			"content_match_case_sensitive": schema.BoolAttribute{Optional: true, Computed: true, Default: booldefault.StaticBool(false), Description: "Case-sensitive content match."},
-			"content_change_enabled":       schema.BoolAttribute{Optional: true, Computed: true, Default: booldefault.StaticBool(false), Description: "Alert when the response content changes unexpectedly."},
+			"content_match_selector": schema.StringAttribute{
+				Optional:    true,
+				Computed:    true,
+				Default:     stringdefault.StaticString(""),
+				Description: "CSS selector scoping the match to part of the page. Required by content_match_type equals/exists/not_exists and by content_match_extract/content_match_attribute.",
+			},
+			"content_match_extract": schema.StringAttribute{
+				Optional:    true,
+				Computed:    true,
+				Default:     stringdefault.StaticString(""),
+				Description: "What to read from the selected elements: text or attribute. Requires content_match_selector.",
+				Validators: []validator.String{
+					stringvalidator.OneOf("", "text", "attribute"),
+				},
+			},
+			"content_match_attribute": schema.StringAttribute{
+				Optional:    true,
+				Computed:    true,
+				Default:     stringdefault.StaticString(""),
+				Description: "Attribute to read when content_match_extract is attribute (e.g. href). Requires content_match_selector.",
+			},
+			"content_change_enabled": schema.BoolAttribute{Optional: true, Computed: true, Default: booldefault.StaticBool(false), Description: "Alert when the response content changes unexpectedly."},
 			"content_change_severity": schema.StringAttribute{
 				Optional:    true,
 				Computed:    true,
@@ -478,6 +507,8 @@ func (r *checkResource) Create(ctx context.Context, req resource.CreateRequest, 
 		ContentMatchText:             strPtr(plan.ContentMatchText.ValueString()),
 		ContentMatchType:             strPtr(plan.ContentMatchType.ValueString()),
 		ContentMatchCaseSensitive:    boolPtr(plan.ContentMatchCaseSensitive.ValueBool()),
+		ContentMatchSelector:         strPtr(plan.ContentMatchSelector.ValueString()),
+		ContentMatchAttribute:        strPtr(plan.ContentMatchAttribute.ValueString()),
 		ContentChangeEnabled:         boolPtr(plan.ContentChangeEnabled.ValueBool()),
 		ContentChangeSeverity:        strPtr(plan.ContentChangeSeverity.ValueString()),
 		GeoContentConsistencyEnabled: boolPtr(plan.GeoContentConsistencyEnabled.ValueBool()),
@@ -537,6 +568,7 @@ func (r *checkResource) Create(ctx context.Context, req resource.CreateRequest, 
 	if ignorePatterns != nil {
 		createReq.ContentIgnorePatterns = &ignorePatterns
 	}
+	setContentMatchExtract(&createReq.ContentMatchExtract, plan.ContentMatchExtract, false)
 
 	createReq.HttpHeaders, d = normToMap(plan.HTTPHeaders)
 	resp.Diagnostics.Append(d...)
@@ -641,6 +673,8 @@ func (r *checkResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		ContentMatchText:             strPtr(plan.ContentMatchText.ValueString()),
 		ContentMatchType:             strPtr(plan.ContentMatchType.ValueString()),
 		ContentMatchCaseSensitive:    boolPtr(plan.ContentMatchCaseSensitive.ValueBool()),
+		ContentMatchSelector:         strPtr(plan.ContentMatchSelector.ValueString()),
+		ContentMatchAttribute:        strPtr(plan.ContentMatchAttribute.ValueString()),
 		ContentChangeEnabled:         boolPtr(plan.ContentChangeEnabled.ValueBool()),
 		ContentChangeSeverity:        strPtr(plan.ContentChangeSeverity.ValueString()),
 		GeoContentConsistencyEnabled: boolPtr(plan.GeoContentConsistencyEnabled.ValueBool()),
@@ -709,6 +743,7 @@ func (r *checkResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	if uagents != nil {
 		updateReq.AssignedAgentIds = &uagents
 	}
+	setContentMatchExtract(&updateReq.ContentMatchExtract, plan.ContentMatchExtract, true)
 
 	updateReq.HttpHeaders, d = normToMap(plan.HTTPHeaders)
 	resp.Diagnostics.Append(d...)
@@ -812,6 +847,9 @@ func mapCheckToState(ctx context.Context, check *models.CheckResponse, state *Ch
 	state.ContentMatchText = strVal(check.ContentMatchText)
 	state.ContentMatchType = strVal(check.ContentMatchType)
 	state.ContentMatchCaseSensitive = boolVal(check.ContentMatchCaseSensitive)
+	state.ContentMatchSelector = strVal(check.ContentMatchSelector)
+	state.ContentMatchExtract = strVal(check.ContentMatchExtract)
+	state.ContentMatchAttribute = strVal(check.ContentMatchAttribute)
 	state.ContentChangeEnabled = boolVal(check.ContentChangeEnabled)
 	state.ContentChangeSeverity = strVal(check.ContentChangeSeverity)
 	state.GeoContentConsistencyEnabled = boolVal(check.GeoContentConsistencyEnabled)
@@ -1012,6 +1050,19 @@ func secretUpdate(planVal, priorVal string) *string {
 		return &empty
 	}
 	return nil
+}
+
+// setContentMatchExtract writes content_match_extract into a request payload.
+// The API is asymmetric here: CheckCreate's validator accepts only "text" or
+// "attribute", so an unset extract must be omitted from a create, while
+// update treats "" as "clear back to NULL" and must send it.
+func setContentMatchExtract(dst **string, v types.String, isUpdate bool) {
+	s := v.ValueString()
+	if s == "" && !isUpdate {
+		*dst = nil
+		return
+	}
+	*dst = &s
 }
 
 func strPtr(s string) *string { return &s }

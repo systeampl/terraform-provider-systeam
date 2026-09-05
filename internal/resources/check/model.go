@@ -58,6 +58,9 @@ type CheckModel struct {
 	ContentMatchText          types.String `tfsdk:"content_match_text"`
 	ContentMatchType          types.String `tfsdk:"content_match_type"`
 	ContentMatchCaseSensitive types.Bool   `tfsdk:"content_match_case_sensitive"`
+	ContentMatchSelector      types.String `tfsdk:"content_match_selector"`
+	ContentMatchExtract       types.String `tfsdk:"content_match_extract"`
+	ContentMatchAttribute     types.String `tfsdk:"content_match_attribute"`
 	// Content change / geo consistency monitoring
 	ContentChangeEnabled         types.Bool   `tfsdk:"content_change_enabled"`
 	ContentChangeSeverity        types.String `tfsdk:"content_change_severity"`

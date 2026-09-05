@@ -172,3 +172,65 @@ func TestContentIgnorePatternsClearOnUpdate(t *testing.T) {
 		t.Error("listToStrs(null) must return nil so the field is omitted from the payload")
 	}
 }
+
+// TestSelectorContentMatchFieldsRoundTrip extends the read-back contract to the
+// DOM-assertion fields: anything the API echoes must be re-mapped, or Terraform
+// reports "inconsistent result after apply".
+func TestSelectorContentMatchFieldsRoundTrip(t *testing.T) {
+	ctx := context.Background()
+
+	selector, extract, attribute, matchType := "link[rel=canonical]", "attribute", "href", "equals"
+	state := &CheckModel{}
+	diags := mapCheckToState(ctx, &models.CheckResponse{
+		ContentMatchSelector:  &selector,
+		ContentMatchExtract:   &extract,
+		ContentMatchAttribute: &attribute,
+		ContentMatchType:      &matchType,
+	}, state)
+	if diags.HasError() {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+
+	for name, got := range map[string]struct{ have, want string }{
+		"content_match_selector":  {state.ContentMatchSelector.ValueString(), selector},
+		"content_match_extract":   {state.ContentMatchExtract.ValueString(), extract},
+		"content_match_attribute": {state.ContentMatchAttribute.ValueString(), attribute},
+		"content_match_type":      {state.ContentMatchType.ValueString(), matchType},
+	} {
+		if got.have != got.want {
+			t.Errorf("%s: want %q, got %q", name, got.want, got.have)
+		}
+	}
+}
+
+// TestContentMatchExtractOmittedWhenEmpty pins an asymmetry the other string
+// fields do not have. The API rejects content_match_extract="" outright on
+// create (CheckCreate's model validator only accepts text/attribute), while it
+// treats "" on update as "clear this back to NULL". So the create payload must
+// omit an unset extract, and the update payload must still carry the empty
+// string. Sending "" on create would make every content_match_enabled check
+// fail with a 422.
+func TestContentMatchExtractOmittedWhenEmpty(t *testing.T) {
+	var createReq models.CreateNewCheckJSONRequestBody
+	setContentMatchExtract(&createReq.ContentMatchExtract, types.StringValue(""), false)
+	body, err := json.Marshal(createReq)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(body), "content_match_extract") {
+		t.Errorf("create body must omit an empty content_match_extract, got: %s", body)
+	}
+
+	setContentMatchExtract(&createReq.ContentMatchExtract, types.StringValue("attribute"), false)
+	body, _ = json.Marshal(createReq)
+	if !strings.Contains(string(body), `"content_match_extract":"attribute"`) {
+		t.Errorf("create body must carry a configured extract, got: %s", body)
+	}
+
+	var updateReq models.UpdateCheckJSONRequestBody
+	setContentMatchExtract(&updateReq.ContentMatchExtract, types.StringValue(""), true)
+	body, _ = json.Marshal(updateReq)
+	if !strings.Contains(string(body), `"content_match_extract":""`) {
+		t.Errorf("update body must send \"\" so a previously-set extract can be cleared, got: %s", body)
+	}
+}
