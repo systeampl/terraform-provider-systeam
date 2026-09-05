@@ -36,13 +36,13 @@ Manages a health check.
 - `content_change_enabled` (Boolean) Alert when the response content changes unexpectedly.
 - `content_change_severity` (String) notify, degraded, or down.
 - `content_ignore_patterns` (List of String) Regex patterns to ignore when detecting content changes (e.g. timestamps).
-- `content_match_attribute` (String) Attribute to read when content_match_extract is attribute (e.g. href). Requires content_match_selector.
+- `content_match_attribute` (String) Attribute to read when `content_match_extract` is `attribute` (e.g. href). Requires `content_match_selector`.
 - `content_match_case_sensitive` (Boolean) Case-sensitive content match.
 - `content_match_enabled` (Boolean) Enable response content matching.
-- `content_match_extract` (String) What to read from the selected elements: text or attribute. Requires content_match_selector.
-- `content_match_selector` (String) CSS selector scoping the match to part of the page. Required by content_match_type equals/exists/not_exists and by content_match_extract/content_match_attribute.
+- `content_match_extract` (String) What to read from the selected elements: `text` or `attribute`. Requires `content_match_selector`.
+- `content_match_selector` (String) CSS selector scoping the match to part of the page. Required by the `equals`, `exists` and `not_exists` match types, and by `content_match_extract`/`content_match_attribute`.
 - `content_match_text` (String) Text or regex to match in the response.
-- `content_match_type` (String) contains, not_contains, regex, equals, exists, or not_exists. The last three require content_match_selector.
+- `content_match_type` (String) One of `contains`, `not_contains`, `regex`, `equals`, `exists`, `not_exists`. The last three require `content_match_selector`.
 - `cron_expression` (String) Cron expression (heartbeat checks).
 - `cron_timezone` (String) Cron timezone (heartbeat checks). Server default: UTC.
 - `db_expected_result` (String) Expected query result for validation (database checks).

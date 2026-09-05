@@ -283,7 +283,7 @@ func (r *checkResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 				Optional:    true,
 				Computed:    true,
 				Default:     stringdefault.StaticString("contains"),
-				Description: "contains, not_contains, regex, equals, exists, or not_exists. The last three require content_match_selector.",
+				Description: "One of `contains`, `not_contains`, `regex`, `equals`, `exists`, `not_exists`. The last three require `content_match_selector`.",
 				Validators: []validator.String{
 					stringvalidator.OneOf("contains", "not_contains", "regex", "equals", "exists", "not_exists"),
 				},
@@ -293,13 +293,13 @@ func (r *checkResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 				Optional:    true,
 				Computed:    true,
 				Default:     stringdefault.StaticString(""),
-				Description: "CSS selector scoping the match to part of the page. Required by content_match_type equals/exists/not_exists and by content_match_extract/content_match_attribute.",
+				Description: "CSS selector scoping the match to part of the page. Required by the `equals`, `exists` and `not_exists` match types, and by `content_match_extract`/`content_match_attribute`.",
 			},
 			"content_match_extract": schema.StringAttribute{
 				Optional:    true,
 				Computed:    true,
 				Default:     stringdefault.StaticString(""),
-				Description: "What to read from the selected elements: text or attribute. Requires content_match_selector.",
+				Description: "What to read from the selected elements: `text` or `attribute`. Requires `content_match_selector`.",
 				Validators: []validator.String{
 					stringvalidator.OneOf("", "text", "attribute"),
 				},
@@ -308,7 +308,7 @@ func (r *checkResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 				Optional:    true,
 				Computed:    true,
 				Default:     stringdefault.StaticString(""),
-				Description: "Attribute to read when content_match_extract is attribute (e.g. href). Requires content_match_selector.",
+				Description: "Attribute to read when `content_match_extract` is `attribute` (e.g. href). Requires `content_match_selector`.",
 			},
 			"content_change_enabled": schema.BoolAttribute{Optional: true, Computed: true, Default: booldefault.StaticBool(false), Description: "Alert when the response content changes unexpectedly."},
 			"content_change_severity": schema.StringAttribute{
