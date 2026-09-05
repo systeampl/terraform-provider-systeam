@@ -234,3 +234,20 @@ func TestContentMatchExtractOmittedWhenEmpty(t *testing.T) {
 		t.Errorf("update body must send \"\" so a previously-set extract can be cleared, got: %s", body)
 	}
 }
+
+// TestContentMatchTextClearsOnUpdate pins the same clearing contract for the
+// provider: an emptied content_match_text must reach the API as "", which the
+// backend normalizes to NULL. Omitting it (or sending null) would leave the
+// previously saved text in place and produce a permanent plan diff.
+func TestContentMatchTextClearsOnUpdate(t *testing.T) {
+	var updateReq models.UpdateCheckJSONRequestBody
+	updateReq.ContentMatchText = strPtr(types.StringValue("").ValueString())
+
+	body, err := json.Marshal(updateReq)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(body), `"content_match_text":""`) {
+		t.Errorf("update body must carry an explicit empty string, got: %s", body)
+	}
+}
